@@ -2,6 +2,9 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
+const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+
 export default function AuthGate({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<any>(null);
   const [email, setEmail] = useState('');
@@ -21,10 +24,9 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     e.preventDefault();
     setSending(true);
     try {
-      // Use only the origin so links work on your new domain and on localhost
       await supabase.auth.signInWithOtp({
         email,
-        options: { emailRedirectTo: window.location.origin }
+        options: { emailRedirectTo: SITE_URL } // ✅ always your primary domain
       });
       alert('Check your email for a magic link.');
     } catch (err: any) {
