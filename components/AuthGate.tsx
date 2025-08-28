@@ -1,46 +1,61 @@
 'use client';
+
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL!;
-await supabase.auth.signInWithOtp({
-  email,
-  options: { emailRedirectTo: SITE_URL }});
+const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL ||
   (typeof window !== 'undefined' ? window.location.origin : '');
 
 export default function AuthGate({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<null | { email?: string }>(null);
   const [email, setEmail] = useState('');
   const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
+  // Load current user and subscribe to auth changes
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => setUser(data.user));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+    let mounted = true;
+
+    supabase.auth.getUser().then(({ data }) => {
+      if (mounted) setUser(data.user ?? null);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
     });
+
     return () => {
-      sub.subscription.unsubscribe();
+      mounted = false;
+      listener?.subscription.unsubscribe();
     };
   }, []);
 
   async function signIn(e: React.FormEvent) {
     e.preventDefault();
     setSending(true);
+    setError(null);
     try {
+      // Force redirect to your primary domain (or localhost in dev)
       await supabase.auth.signInWithOtp({
         email,
-        options: { emailRedirectTo: SITE_URL } // ✅ force redirect to your primary domain
+        options: { emailRedirectTo: SITE_URL }
       });
-      alert('Check your email for a magic link.');
+      alert('Magic link sent. Check your email.');
     } catch (err: any) {
-      alert(err.message || 'Failed to send magic link');
+      setError(err?.message || 'Failed to send magic link');
     } finally {
       setSending(false);
     }
   }
 
   async function signOut() {
-    await supabase.auth.signOut();
+    setError(null);
+    try {
+      await supabase.auth.signOut();
+    } catch (err: any) {
+      setError(err?.message || 'Failed to sign out');
+    }
   }
 
   if (!user) {
@@ -60,6 +75,10 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
           <button className="btn btn-primary w-full" type="submit" disabled={sending}>
             {sending ? 'Sending…' : 'Send Magic Link'}
           </button>
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          <p className="text-xs text-gray-500">
+            You’ll receive a one-time link that signs you in. No password needed.
+          </p>
         </form>
       </div>
     );
@@ -69,11 +88,12 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     <div>
       <div className="flex items-center justify-between mb-4">
         <div className="text-sm text-gray-600">
-          Signed in as <b>{user.email}</b>
+          Signed in as <b>{user.email || 'user'}</b>
         </div>
         <button className="btn" onClick={signOut}>Sign out</button>
       </div>
       {children}
+      {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
     </div>
   );
 }
