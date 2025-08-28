@@ -1,9 +1,7 @@
+// components/AuthGate.tsx
 'use client';
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
-
-const SITE_URL =
-  process.env.NEXT_PUBLIC_SITE_URL || (typeof window !== 'undefined' ? window.location.origin : '');
 
 export default function AuthGate({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<any>(null);
@@ -12,33 +10,23 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setUser(data.user));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
-    return () => {
-      sub.subscription.unsubscribe();
-    };
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setUser(s?.user ?? null));
+    return () => sub.subscription.unsubscribe();
   }, []);
 
   async function signIn(e: React.FormEvent) {
     e.preventDefault();
     setSending(true);
     try {
-      await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: SITE_URL } // ✅ always your primary domain
-      });
+      // No emailRedirectTo → Supabase uses your Site URL
+      await supabase.auth.signInWithOtp({ email });
       alert('Check your email for a magic link.');
     } catch (err: any) {
       alert(err.message || 'Failed to send magic link');
-    } finally {
-      setSending(false);
-    }
+    } finally { setSending(false); }
   }
 
-  async function signOut() {
-    await supabase.auth.signOut();
-  }
+  async function signOut() { await supabase.auth.signOut(); }
 
   if (!user) {
     return (
@@ -46,14 +34,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
         <h2 className="text-xl font-semibold mb-2">Sign in</h2>
         <form onSubmit={signIn} className="space-y-2">
           <label className="label">Email</label>
-          <input
-            className="input"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-            required
-          />
+          <input className="input" type="email" value={email} onChange={e=>setEmail(e.target.value)} required />
           <button className="btn btn-primary w-full" type="submit" disabled={sending}>
             {sending ? 'Sending…' : 'Send Magic Link'}
           </button>
@@ -65,9 +46,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <div className="text-sm text-gray-600">
-          Signed in as <b>{user.email}</b>
-        </div>
+        <div className="text-sm text-gray-600">Signed in as <b>{user.email}</b></div>
         <button className="btn" onClick={signOut}>Sign out</button>
       </div>
       {children}
