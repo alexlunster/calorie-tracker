@@ -2,8 +2,10 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
-const SITE_URL =
-  process.env.NEXT_PUBLIC_SITE_URL ||
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL!;
+await supabase.auth.signInWithOtp({
+  email,
+  options: { emailRedirectTo: SITE_URL }});
   (typeof window !== 'undefined' ? window.location.origin : '');
 
 export default function AuthGate({ children }: { children: React.ReactNode }) {
