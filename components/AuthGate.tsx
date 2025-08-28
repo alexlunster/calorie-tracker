@@ -5,19 +5,38 @@ import { supabase } from '@/lib/supabaseClient';
 export default function AuthGate({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<any>(null);
   const [email, setEmail] = useState('');
+  const [sending, setSending] = useState(false);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setUser(data.user));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setUser(s?.user ?? null));
-    return () => { sub.subscription.unsubscribe(); };
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => {
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
   async function signIn(e: React.FormEvent) {
     e.preventDefault();
-    await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.href } });
-    alert('Check your email for a magic link.');
+    setSending(true);
+    try {
+      // Use only the origin so links work on your new domain and on localhost
+      await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: window.location.origin }
+      });
+      alert('Check your email for a magic link.');
+    } catch (err: any) {
+      alert(err.message || 'Failed to send magic link');
+    } finally {
+      setSending(false);
+    }
   }
-  async function signOut() { await supabase.auth.signOut(); }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+  }
 
   if (!user) {
     return (
@@ -25,16 +44,28 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
         <h2 className="text-xl font-semibold mb-2">Sign in</h2>
         <form onSubmit={signIn} className="space-y-2">
           <label className="label">Email</label>
-          <input className="input" type="email" value={email} onChange={e=>setEmail(e.target.value)} required />
-          <button className="btn btn-primary w-full" type="submit">Send Magic Link</button>
+          <input
+            className="input"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@example.com"
+            required
+          />
+          <button className="btn btn-primary w-full" type="submit" disabled={sending}>
+            {sending ? 'Sending…' : 'Send Magic Link'}
+          </button>
         </form>
       </div>
     );
   }
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <div className="text-sm text-gray-600">Signed in as <b>{user.email}</b></div>
+        <div className="text-sm text-gray-600">
+          Signed in as <b>{user.email}</b>
+        </div>
         <button className="btn" onClick={signOut}>Sign out</button>
       </div>
       {children}
