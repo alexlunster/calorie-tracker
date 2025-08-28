@@ -1,9 +1,12 @@
+// components/UploadCard.tsx
 'use client';
 import { useState } from 'react';
 import Image from 'next/image';
 import { supabase } from '@/lib/supabaseClient';
+import { useRouter } from 'next/navigation';
 
-export default function UploadCard({ onDone }: { onDone: () => void }) {
+export default function UploadCard() {
+  const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -40,7 +43,8 @@ export default function UploadCard({ onDone }: { onDone: () => void }) {
       if (!res.ok) throw new Error(await res.text());
       await res.json();
 
-      onDone();
+      // Navigate on success (no parent callback)
+      router.push('/dashboard');
     } catch (e:any) {
       setError(e.message || 'Something went wrong');
     } finally {
