@@ -1,11 +1,14 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 
 export default function UploadCard() {
   const router = useRouter();
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -21,66 +24,78 @@ export default function UploadCard() {
     setLoading(true); setError(null);
 
     try {
-      // 0) Must be signed in
+      // Must be signed in
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Please sign in first.');
 
-      // 1) Upload to Storage
-      console.log('[UploadCard] step 1: uploading to storage');
+      // 1) Upload to Storage (user folder)
       const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
       const path = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
       const up = await supabase.storage.from('photos').upload(path, file);
-      if (up.error) {
-        console.error('[UploadCard] storage upload error', up.error);
-        throw new Error(`Storage upload failed: ${up.error.message}`);
-      }
+      if (up.error) throw new Error(`Storage upload failed: ${up.error.message}`);
 
       const { data: pub } = supabase.storage.from('photos').getPublicUrl(path);
       const imageUrl = pub.publicUrl;
-      console.log('[UploadCard] uploaded. public url:', imageUrl);
 
-      // 2) Analyze with OpenAI via our API
-      console.log('[UploadCard] step 2: calling /api/analyze');
+      // 2) Analyze via API (OpenAI)
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageUrl })
       });
-      if (!res.ok) {
-        const t = await res.text();
-        console.error('[UploadCard] analyze error', t);
-        throw new Error(`Analyze failed: ${t}`);
-      }
+      if (!res.ok) throw new Error(`Analyze failed: ${await res.text()}`);
       const { result } = await res.json();
-      console.log('[UploadCard] analyze result:', result);
 
-      // 3) Insert into DB FROM THE CLIENT (has JWT → RLS passes)
-      console.log('[UploadCard] step 3: inserting into entries');
+      // 3) Insert into DB from client (RLS uses your JWT)
       const { error: dbErr } = await supabase.from('entries').insert({
         image_url: imageUrl,
-        items: result?.items ?? [],
+        items: result?.meal_name ? { meal_name: result.meal_name, items: result.items } : (result?.items ?? []),
         total_calories: result?.total_calories ?? 0
-        // user_id is auto-set by trigger; if you removed the trigger, add: user_id: user.id
       });
-      if (dbErr) {
-        console.error('[UploadCard] db insert error', dbErr);
-        throw new Error(`DB insert failed: ${dbErr.message}`);
-      }
+      if (dbErr) throw new Error(`DB insert failed: ${dbErr.message}`);
 
-      // 4) Go to dashboard
       router.push('/dashboard');
     } catch (e: any) {
       setError(e.message || 'Something went wrong');
     } finally {
-      setLoading(false); setFile(null); setPreview(null);
+      setLoading(false);
+      setFile(null);
+      setPreview(null);
+      // reset inputs so user can re-upload same file if needed
+      if (cameraInputRef.current) cameraInputRef.current.value = '';
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }
 
   return (
     <div className="card space-y-3">
-      <div>
-        <label className="label">Take/Upload a photo</label>
-        <input className="input" type="file" accept="image/*" capture="environment" onChange={onPick} />
+      <div className="label">Add a meal photo</div>
+
+      {/* Hidden inputs */}
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"   // forces camera on many phones
+        onChange={onPick}
+        className="hidden"
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"        // gallery / files
+        onChange={onPick}
+        className="hidden"
+      />
+
+      {/* Clear options */}
+      <div className="grid grid-cols-2 gap-2">
+        <button className="btn w-full" onClick={() => cameraInputRef.current?.click()}>
+          Take Photo
+        </button>
+        <button className="btn w-full" onClick={() => fileInputRef.current?.click()}>
+          Choose from Device
+        </button>
       </div>
 
       {preview && (
@@ -94,6 +109,11 @@ export default function UploadCard() {
       </button>
 
       {error && <p className="text-red-600 text-sm">{error}</p>}
+      {!error && !file && (
+        <p className="text-xs text-gray-500">
+          Tip: You can either take a new photo or pick one from your gallery.
+        </p>
+      )}
     </div>
   );
 }
