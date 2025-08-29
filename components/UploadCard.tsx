@@ -21,45 +21,58 @@ export default function UploadCard() {
     setLoading(true); setError(null);
 
     try {
-      // Ensure user is logged in
+      // 0) Must be signed in
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Please sign in first.');
 
-      // 1) Upload to Storage under <userId>/...
+      // 1) Upload to Storage
+      console.log('[UploadCard] step 1: uploading to storage');
       const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
       const path = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
       const up = await supabase.storage.from('photos').upload(path, file);
-      if (up.error) throw up.error;
+      if (up.error) {
+        console.error('[UploadCard] storage upload error', up.error);
+        throw new Error(`Storage upload failed: ${up.error.message}`);
+      }
 
       const { data: pub } = supabase.storage.from('photos').getPublicUrl(path);
       const imageUrl = pub.publicUrl;
+      console.log('[UploadCard] uploaded. public url:', imageUrl);
 
-      // 2) Ask our API to analyze the image (OpenAI)
+      // 2) Analyze with OpenAI via our API
+      console.log('[UploadCard] step 2: calling /api/analyze');
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageUrl })
       });
-      if (!res.ok) throw new Error(await res.text());
-      const { result } = await res.json(); // { items, total_calories }
+      if (!res.ok) {
+        const t = await res.text();
+        console.error('[UploadCard] analyze error', t);
+        throw new Error(`Analyze failed: ${t}`);
+      }
+      const { result } = await res.json();
+      console.log('[UploadCard] analyze result:', result);
 
-      // 3) Insert into DB FROM THE CLIENT (has user JWT) → RLS passes
+      // 3) Insert into DB FROM THE CLIENT (has JWT → RLS passes)
+      console.log('[UploadCard] step 3: inserting into entries');
       const { error: dbErr } = await supabase.from('entries').insert({
         image_url: imageUrl,
         items: result?.items ?? [],
         total_calories: result?.total_calories ?? 0
-        // user_id is auto-set by trigger if you created it; if not, add user_id: user.id
+        // user_id is auto-set by trigger; if you removed the trigger, add: user_id: user.id
       });
-      if (dbErr) throw dbErr;
+      if (dbErr) {
+        console.error('[UploadCard] db insert error', dbErr);
+        throw new Error(`DB insert failed: ${dbErr.message}`);
+      }
 
-      // Done → go to dashboard
+      // 4) Go to dashboard
       router.push('/dashboard');
     } catch (e: any) {
       setError(e.message || 'Something went wrong');
     } finally {
-      setLoading(false);
-      setFile(null);
-      setPreview(null);
+      setLoading(false); setFile(null); setPreview(null);
     }
   }
 
