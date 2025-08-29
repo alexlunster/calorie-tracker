@@ -1,7 +1,7 @@
 import './globals.css';
 import type { Metadata } from 'next';
 import I18nProvider from '@/components/I18nProvider';
-import LanguageSwitcher from '@/components/LanguageSwitcher';
+import HeaderBar from '@/components/HeaderBar';
 
 export const metadata: Metadata = {
   title: 'Calorie Tracker',
@@ -14,10 +14,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <I18nProvider>
           <div className="container">
-            <header className="mb-6 flex items-center justify-between">
-              <h1 className="text-2xl font-bold">Calorie Tracker</h1>
-              <LanguageSwitcher />
-            </header>
+            <HeaderBar />
             {children}
           </div>
         </I18nProvider>
