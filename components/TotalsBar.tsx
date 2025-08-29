@@ -1,68 +1,141 @@
-'use client';
-import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabaseClient';
-import { startOfDay, startOfWeek, startOfMonth } from '@/lib/aggregate';
-import { useI18n } from '@/components/I18nProvider';
+"use client";
 
-type Entry = { created_at: string; total_calories: number; user_id: string };
-type Goals = { daily_target: number; weekly_target: number; monthly_target: number };
+import { useEffect, useMemo, useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
+import { pretty, pct } from "@/lib/ui";
+import { useI18n } from "@/components/I18nProvider";
+
+type Entry = {
+  calories: number | null;
+  created_at: string;
+};
 
 export default function TotalsBar() {
   const { t } = useI18n();
-  const [sumToday, setSumToday] = useState(0);
-  const [sumWeek, setSumWeek] = useState(0);
-  const [sumMonth, setSumMonth] = useState(0);
-  const [goals, setGoals] = useState<Goals>({ daily_target: 2000, weekly_target: 14000, monthly_target: 60000 });
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [dailyTarget, setDailyTarget] = useState<number>(2000);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const [{ data: entries }, { data: g }] = await Promise.all([
-        supabase.from('entries')
-          .select('created_at,total_calories,user_id')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false })
-          .limit(200),
-        supabase.from('goals').select('*').eq('user_id', user.id).single()
-      ]);
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth.user) return;
 
-      if (g) setGoals(g as Goals);
+      // pull last 60 days of entries (more than enough for month calc)
+      const { data: rows } = await supabase
+        .from("entries")
+        .select("calories, created_at")
+        .eq("user_id", auth.user.id)
+        .gte("created_at", new Date(Date.now() - 1000 * 60 * 60 * 24 * 60).toISOString())
+        .order("created_at", { ascending: false });
 
-      const list = (entries || []) as Entry[];
-      const d0 = startOfDay(); const w0 = startOfWeek(); const m0 = startOfMonth();
-      const sum = (from: Date) => list.filter(e => new Date(e.created_at) >= from)
-        .reduce((a, b) => a + (b.total_calories || 0), 0);
+      if (rows) setEntries(rows as Entry[]);
 
-      setSumToday(sum(d0));
-      setSumWeek(sum(w0));
-      setSumMonth(sum(m0));
+      // pull daily target if exists
+      const { data: prof } = await supabase
+        .from("profiles")
+        .select("daily_target")
+        .eq("id", auth.user.id)
+        .maybeSingle();
+      if (prof?.daily_target) setDailyTarget(prof.daily_target);
+
+      setLoading(false);
     })();
   }, []);
 
+  const { day, week, month, weekTarget, monthTarget } = useMemo(() => {
+    const now = new Date();
+
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const startOfWeek = new Date(now);
+    const dayIdx = (startOfWeek.getDay() + 6) % 7; // Monday = 0
+    startOfWeek.setDate(startOfWeek.getDate() - dayIdx);
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const toNum = (v: number | null | undefined) => (typeof v === "number" ? v : 0);
+
+    const d = entries
+      .filter((e) => new Date(e.created_at) >= startOfDay)
+      .reduce((s, e) => s + toNum(e.calories), 0);
+
+    const w = entries
+      .filter((e) => new Date(e.created_at) >= startOfWeek)
+      .reduce((s, e) => s + toNum(e.calories), 0);
+
+    const m = entries
+      .filter((e) => new Date(e.created_at) >= startOfMonth)
+      .reduce((s, e) => s + toNum(e.calories), 0);
+
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+    return {
+      day: d,
+      week: w,
+      month: m,
+      weekTarget: dailyTarget * 7,
+      monthTarget: dailyTarget * daysInMonth,
+    };
+  }, [entries, dailyTarget]);
+
   return (
-    <div className="card">
-      <h2 className="text-xl font-semibold mb-2">{t('totals')}</h2>
-      <div className="grid grid-cols-3 gap-4">
-        <Stat label={t('today')} value={sumToday} target={goals.daily_target} tKcal={t('kcal')} tOf={t('of')} />
-        <Stat label={t('this_week')} value={sumWeek} target={goals.weekly_target} tKcal={t('kcal')} tOf={t('of')} />
-        <Stat label={t('this_month')} value={sumMonth} target={goals.monthly_target} tKcal={t('kcal')} tOf={t('of')} />
+    <section className="space-y-3">
+      {/* Header only (not a card) */}
+      <h2 className="text-xl font-semibold">{pretty(t("totals") || "Totals")}</h2>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <TotalCard
+          label={pretty(t("day") || "day")}
+          value={day}
+          target={dailyTarget}
+        />
+        <TotalCard
+          label={pretty(t("week") || "week")}
+          value={week}
+          target={weekTarget}
+        />
+        <TotalCard
+          label={pretty(t("month") || "month")}
+          value={month}
+          target={monthTarget}
+        />
       </div>
-    </div>
+
+      {loading && <p className="text-sm text-gray-500">{pretty(t("loading") || "loading")}…</p>}
+    </section>
   );
 }
 
-function Stat({
-  label, value, target, tKcal, tOf,
-}: { label: string; value: number; target: number; tKcal: string; tOf: string }) {
-  const pct = target ? Math.min(100, Math.round((value / target) * 100)) : 0;
+function TotalCard({
+  label,
+  value,
+  target,
+}: {
+  label: string;
+  value: number;
+  target: number;
+}) {
+  const percent = pct(target > 0 ? (value / target) * 100 : 0);
+
   return (
-    <div>
+    <div className="border rounded-lg p-3 bg-white dark:bg-gray-900">
       <div className="text-sm text-gray-600">{label}</div>
-      <div className="text-2xl font-bold">{value} {tKcal}</div>
-      <div className="text-xs text-gray-500">{pct}% {tOf} {target} {tKcal}</div>
-      <div className="w-full h-2 bg-gray-200 rounded-full mt-1">
-        <div className="h-2 bg-black rounded-full" style={{ width: `${pct}%` }} />
+      <div className="text-2xl font-semibold">{Math.round(value)} kcal</div>
+
+      <div className="mt-2">
+        <div className="w-full h-2 rounded bg-gray-200 overflow-hidden">
+          <div
+            className="h-2 bg-blue-600"
+            style={{ width: `${percent}%` }}
+            aria-label={`${Math.round(percent)}%`}
+          />
+        </div>
+        <div className="mt-1 text-xs text-gray-500">
+          {Math.round(percent)}% of {Math.round(target)} kcal
+        </div>
       </div>
     </div>
   );
