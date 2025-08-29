@@ -2,10 +2,12 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { startOfDay, startOfWeek, startOfMonth } from '@/lib/aggregate';
+import { useI18n } from '@/components/I18nProvider';
 
 type Entry = { created_at: string; total_calories: number; user_id: string };
 
 export default function TotalsBar() {
+  const { t } = useI18n();
   const [sumToday, setSumToday] = useState(0);
   const [sumWeek, setSumWeek] = useState(0);
   const [sumMonth, setSumMonth] = useState(0);
@@ -19,7 +21,7 @@ export default function TotalsBar() {
         .select('created_at,total_calories,user_id')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
-        .limit(200); // read a chunk; adjust if you need more
+        .limit(200);
       const entries = (data || []) as Entry[];
 
       const d0 = startOfDay();
@@ -27,9 +29,8 @@ export default function TotalsBar() {
       const m0 = startOfMonth();
 
       const sum = (from: Date) =>
-        entries
-          .filter(e => new Date(e.created_at) >= from)
-          .reduce((a, b) => a + (b.total_calories || 0), 0);
+        entries.filter(e => new Date(e.created_at) >= from)
+               .reduce((a, b) => a + (b.total_calories || 0), 0);
 
       setSumToday(sum(d0));
       setSumWeek(sum(w0));
@@ -39,11 +40,11 @@ export default function TotalsBar() {
 
   return (
     <div className="card">
-      <h2 className="text-xl font-semibold mb-2">Totals</h2>
+      <h2 className="text-xl font-semibold mb-2">{t('totals')}</h2>
       <div className="grid grid-cols-3 gap-4">
-        <Stat label="Today" value={sumToday} />
-        <Stat label="This Week" value={sumWeek} />
-        <Stat label="This Month" value={sumMonth} />
+        <Stat label={t('today')} value={sumToday} />
+        <Stat label={t('this_week')} value={sumWeek} />
+        <Stat label={t('this_month')} value={sumMonth} />
       </div>
     </div>
   );
