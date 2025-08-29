@@ -10,7 +10,7 @@ type AnalyzeResponse = {
   meal_name?: string;
   calories?: number | string;
   labels?: string[];
-  items?: any; // JSON-serializable structure if the analyzer returns it
+  items?: any;
 };
 
 export default function UploadCard() {
@@ -45,7 +45,7 @@ export default function UploadCard() {
       }
       const userId = auth.user.id;
 
-      // 2) upload image to Storage
+      // 2) upload image
       const file = files[0];
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
       const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
@@ -58,7 +58,7 @@ export default function UploadCard() {
       const { data: pub } = supabase.storage.from("photos").getPublicUrl(path);
       const imageUrl = pub.publicUrl;
 
-      // 3) analyze image on server (OpenAI)
+      // 3) analyze
       const r = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -68,12 +68,9 @@ export default function UploadCard() {
 
       const parsed: AnalyzeResponse = await r.json();
 
-      // Normalize data for your schema
       const calNum = Number(parsed.calories);
       const calories = Number.isFinite(calNum) ? calNum : 0;
 
-      // Your table has "items jsonb" (no "labels" & no "meal_name")
-      // Put anything we got into items
       const itemsPayload =
         parsed.items ??
         {
@@ -81,17 +78,17 @@ export default function UploadCard() {
           name: parsed.meal_name ?? null,
         };
 
-      // 4) insert into entries with ONLY columns that exist in your schema
+      // 4) insert into entries (include total_calories!)
       const { error: insErr } = await supabase.from("entries").insert({
         user_id: userId,
         image_url: imageUrl,
-        items: itemsPayload, // jsonb
-        calories,            // numeric
-        // Note: no meal_name field here
+        items: itemsPayload,
+        calories,
+        total_calories: calories, // 👈 required, not null
       });
       if (insErr) throw insErr;
 
-      // 5) optional: keep only 3 newest images per user
+      // 5) cleanup old images
       try {
         const { data: list } = await supabase
           .from("entries")
@@ -109,10 +106,9 @@ export default function UploadCard() {
           if (keys.length) await supabase.storage.from("photos").remove(keys);
         }
       } catch {
-        /* best-effort cleanup; ignore */
+        /* ignore */
       }
 
-      // 6) refresh UI
       router.refresh();
     } catch (e: any) {
       setErr(e?.message || "Upload failed");
