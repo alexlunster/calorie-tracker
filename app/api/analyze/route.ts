@@ -1,24 +1,58 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
+// ---- tweakables ----
+const MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024; // 8 MB safety cap
+const FETCH_TIMEOUT_MS = 20000;             // 20s
+// --------------------
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-/**
- * Extracts the first JSON object from a string.
- * Handles cases where the model returns prose around a JSON block.
- */
+/** robustly extract first JSON object from model text */
 function extractJSON(text: string): any {
-  // Try a simple parse first
   try { return JSON.parse(text); } catch {}
-
-  // Fallback: find the first { ... } block
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start !== -1 && end !== -1 && end > start) {
-    const slice = text.slice(start, end + 1);
-    try { return JSON.parse(slice); } catch {}
+  const s = text.indexOf('{');
+  const e = text.lastIndexOf('}');
+  if (s !== -1 && e !== -1 && e > s) {
+    try { return JSON.parse(text.slice(s, e + 1)); } catch {}
   }
   return null;
+}
+
+/** download image and return a data URL (base64) */
+async function toDataURL(imageUrl: string): Promise<string> {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  const res = await fetch(imageUrl, { signal: controller.signal });
+  clearTimeout(t);
+
+  if (!res.ok) {
+    throw new Error(`Image fetch failed: ${res.status} ${res.statusText}`);
+  }
+
+  const contentType = res.headers.get('content-type') || 'application/octet-stream';
+  const reader = res.body!.getReader();
+
+  let received = 0;
+  const chunks: Uint8Array[] = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > MAX_DOWNLOAD_BYTES) {
+      throw new Error(`Image too large (> ${Math.round(MAX_DOWNLOAD_BYTES/1024/1024)}MB)`);
+    }
+    chunks.push(value);
+  }
+
+  const buf = new Uint8Array(received);
+  let offset = 0;
+  for (const c of chunks) { buf.set(c, offset); offset += c.byteLength; }
+
+  // Convert to base64 data URL
+  const base64 = Buffer.from(buf).toString('base64');
+  return `data:${contentType};base64,${base64}`;
 }
 
 export async function POST(req: Request) {
@@ -28,10 +62,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing imageUrl' }, { status: 400 });
     }
 
-    // Clear, schema-first prompt. (Model: gpt-4o-mini supports vision.)
+    // Turn the Supabase public URL into an inline data URL to avoid OpenAI timeouts
+    const dataUrl = await toDataURL(imageUrl);
+
+    // Strong, schema-first prompt
     const system = `
 You estimate calories from a food photo.
-Return STRICT JSON ONLY matching this schema:
+Return STRICT JSON ONLY with this schema:
 
 {
   "meal_name": "short human-friendly name (e.g., 'banana', 'pasta with tomato sauce')",
@@ -43,26 +80,27 @@ Return STRICT JSON ONLY matching this schema:
 }
 
 Rules:
-- Never include markdown, backticks, or prose outside the JSON.
-- If uncertain, be conservative and state assumptions in "notes".
+- Output JSON ONLY (no markdown, no prose).
+- Be conservative when unsure; state assumptions in "notes".
 - Sum per-item calories into total_calories.
 - If only one obvious food appears, use that as meal_name.
-    `.trim();
+`.trim();
 
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       temperature: 0.1,
+      max_tokens: 450,
       messages: [
         { role: 'system', content: system },
         {
           role: 'user',
           content: [
             { type: 'text', text: 'Analyze this meal photo and return JSON only.' },
-            { type: 'image_url', image_url: { url: imageUrl } }
+            // send the inline data URL (OpenAI does not need to fetch anything)
+            { type: 'image_url', image_url: { url: dataUrl } }
           ]
         }
-      ],
-      max_tokens: 450
+      ]
     });
 
     const raw = completion.choices?.[0]?.message?.content || '';
@@ -75,7 +113,7 @@ Rules:
       );
     }
 
-    // Sanitize result
+    // sanitize & normalize
     const items = Array.isArray(parsed.items) ? parsed.items : [];
     const safeItems = items
       .map((i: any) => ({
@@ -96,14 +134,10 @@ Rules:
 
     return NextResponse.json({
       ok: true,
-      result: {
-        meal_name,
-        items: safeItems,
-        total_calories: total,
-        notes
-      }
+      result: { meal_name, items: safeItems, total_calories: total, notes }
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message || 'Analyze failed' }, { status: 500 });
+    const msg = err?.name === 'AbortError' ? 'Image download timed out' : (err?.message || 'Analyze failed');
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
