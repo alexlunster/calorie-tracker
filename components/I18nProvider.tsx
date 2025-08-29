@@ -1,34 +1,37 @@
 "use client";
 
-import React, { createContext, useContext, useState, useCallback } from "react";
+import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 type Translations = Record<string, string>;
 
 const dictionaries: Record<string, Translations> = {
   en: {
-    uploadPhoto: "Upload Photo",
-    recentEntries: "Recent Entries",
-    totalCalories: "Total Calories",
+    upload_photo: "Upload Photo",
+    recent_entries: "Recent Entries",
+    totals: "Totals",
     target: "Target",
     progress: "Progress",
     language: "Language",
+    signed_in_as: "signed_in_as",
   },
   de: {
-    uploadPhoto: "Foto hochladen",
-    recentEntries: "Letzte Einträge",
-    totalCalories: "Gesamtkalorien",
+    upload_photo: "Foto hochladen",
+    recent_entries: "Letzte Einträge",
+    totals: "Summen",
     target: "Ziel",
     progress: "Fortschritt",
     language: "Sprache",
+    signed_in_as: "angemeldet_als",
   },
   ru: {
-    uploadPhoto: "Загрузить фото",
-    recentEntries: "Недавние записи",
-    totalCalories: "Всего калорий",
+    upload_photo: "Загрузить фото",
+    recent_entries: "Недавние записи",
+    totals: "Итоги",
     target: "Цель",
     progress: "Прогресс",
     language: "Язык",
+    signed_in_as: "вы_вошли_как",
   },
 };
 
@@ -50,12 +53,20 @@ export default function I18nProvider({
   const [currentLang, setCurrentLang] = useState(lang);
   const dict = dictionaries[currentLang] || dictionaries.en;
 
-  const t = (key: string) => dict[key] || key;
+  // Translate helper
+  const t = (key: string) => dict[key] ?? key;
 
+  // When language changes, reflect it in <html lang="..."> so screen readers/SEO are correct.
+  useEffect(() => {
+    try {
+      document.documentElement.lang = currentLang;
+    } catch {}
+  }, [currentLang]);
+
+  // Persist choice for logged-in users and update UI immediately
   const saveLang = useCallback(async (newLang: string) => {
     setCurrentLang(newLang);
 
-    // persist to supabase if user is logged in
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -76,8 +87,6 @@ export default function I18nProvider({
 
 export function useI18n() {
   const ctx = useContext(I18nContext);
-  if (!ctx) {
-    throw new Error("useI18n must be used inside <I18nProvider>");
-  }
+  if (!ctx) throw new Error("useI18n must be used inside <I18nProvider>");
   return ctx;
 }
