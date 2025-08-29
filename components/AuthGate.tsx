@@ -4,10 +4,8 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useI18n } from "@/components/I18nProvider";
 import { pretty } from "@/lib/ui";
-import UploadCard from "@/components/UploadCard";
-import Dashboard from "@/components/Dashboard";
 
-export default function AuthGate() {
+export default function AuthGate({ children }: { children?: React.ReactNode }) {
   const { t } = useI18n();
   const [session, setSession] = useState<Awaited<
     ReturnType<typeof supabase.auth.getSession>
@@ -17,22 +15,21 @@ export default function AuthGate() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load session and subscribe to auth changes
   useEffect(() => {
-    let isMounted = true;
+    let alive = true;
 
     supabase.auth.getSession().then(({ data }) => {
-      if (!isMounted) return;
+      if (!alive) return;
       setSession(data.session);
       setLoading(false);
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, next) => {
       setSession(next);
     });
 
     return () => {
-      isMounted = false;
+      alive = false;
       sub.subscription.unsubscribe();
     };
   }, []);
@@ -40,7 +37,6 @@ export default function AuthGate() {
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-
     if (!email) {
       setError(pretty(t("please_enter_email") || "please_enter_email"));
       return;
@@ -63,7 +59,6 @@ export default function AuthGate() {
 
   async function handleSignOut() {
     await supabase.auth.signOut();
-    // Force a refresh to show the login form immediately
     if (typeof window !== "undefined") window.location.href = "/";
   }
 
@@ -75,7 +70,6 @@ export default function AuthGate() {
     );
   }
 
-  // Not logged in → simple Magic Link form
   if (!session) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-4">
@@ -106,7 +100,6 @@ export default function AuthGate() {
     );
   }
 
-  // Logged in view
   return (
     <div className="min-h-screen flex flex-col">
       {/* Top bar: signed in + sign out */}
@@ -122,25 +115,7 @@ export default function AuthGate() {
         </button>
       </div>
 
-      {/* Main content */}
-      <main className="flex-1 p-4 space-y-6">
-        {/* Upload UI on the home */}
-        <UploadCard />
-
-        {/* Recent entries + totals (Dashboard component renders both) */}
-        <section className="space-y-4">
-          <h2 className="text-lg font-semibold">{pretty(t("recent_entries") || "recent_entries")}</h2>
-          <Dashboard />
-
-          {/* Optional deep link to /dashboard page if you have it */}
-          <a
-            href="/dashboard"
-            className="inline-block text-sm text-blue-600 hover:underline"
-          >
-            {pretty(t("go_to_dashboard") || "go_to_dashboard")}
-          </a>
-        </section>
-      </main>
+      <main className="flex-1 p-4">{children}</main>
     </div>
   );
 }
