@@ -1,18 +1,46 @@
 import './globals.css';
 import type { Metadata } from 'next';
+import { createServerComponentClient } from '@supabase/auth-helpers-nextjs';
+import { cookies } from 'next/headers';
 
 export const metadata: Metadata = {
   title: 'Calorie Tracker',
   description: 'Upload a meal photo, estimate calories, and track your goals.',
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  // Create a Supabase client with server-side cookies
+  const supabase = createServerComponentClient({ cookies });
+
+  // Default language is English
+  let lang = 'en';
+
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (session?.user) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('language')
+        .eq('id', session.user.id)
+        .single();
+
+      if (profile?.language) {
+        lang = profile.language; // "en", "ru", or "de"
+      }
+    }
+  } catch (err) {
+    console.warn('Language fallback to English:', err);
+  }
+
   return (
-    <html lang="en">
+    <html lang={lang}>
       <head>
         {/* PWA Manifest */}
         <link rel="manifest" href="/manifest.json" />
