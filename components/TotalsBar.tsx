@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { pretty, pct } from "@/lib/ui";
 import { useI18n } from "@/components/I18nProvider";
@@ -23,40 +23,47 @@ export default function TotalsBar() {
   const [dailyTarget, setDailyTarget] = useState<number>(2000);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    (async () => {
-      const { data: auth } = await supabase.auth.getUser();
-      if (!auth.user) {
-        setLoading(false);
-        return;
-      }
-
-      const { data: rows } = await supabase
-        .from("entries")
-        .select("calories, total_calories, created_at")
-        .eq("user_id", auth.user.id)
-        .gte("created_at", new Date(Date.now() - 1000 * 60 * 60 * 24 * 60).toISOString())
-        .order("created_at", { ascending: false });
-
-      if (rows) setEntries(rows as Entry[]);
-
-      const { data: prof } = await supabase
-        .from("profiles")
-        .select("daily_target")
-        .eq("id", auth.user.id)
-        .maybeSingle();
-      if (prof?.daily_target) {
-        const n = Number(prof.daily_target);
-        if (Number.isFinite(n)) setDailyTarget(n);
-      }
-
+  const fetchData = useCallback(async () => {
+    const { data: auth } = await supabase.auth.getUser();
+    if (!auth.user) {
+      setEntries([]);
       setLoading(false);
-    })();
+      return;
+    }
+
+    const { data: rows } = await supabase
+      .from("entries")
+      .select("calories, total_calories, created_at")
+      .eq("user_id", auth.user.id)
+      .gte("created_at", new Date(Date.now() - 1000 * 60 * 60 * 24 * 60).toISOString())
+      .order("created_at", { ascending: false });
+    if (rows) setEntries(rows as Entry[]);
+
+    const { data: prof } = await supabase
+      .from("profiles")
+      .select("daily_target")
+      .eq("id", auth.user.id)
+      .maybeSingle();
+    if (prof?.daily_target) {
+      const n = Number(prof.daily_target);
+      if (Number.isFinite(n)) setDailyTarget(n);
+    }
+    setLoading(false);
   }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  useEffect(() => {
+    // live update on new entries
+    const onCreated = () => { void fetchData(); };
+    window.addEventListener("entry:created", onCreated as EventListener);
+    return () => window.removeEventListener("entry:created", onCreated as EventListener);
+  }, [fetchData]);
 
   const { day, week, month, weekTarget, monthTarget } = useMemo(() => {
     const now = new Date();
-
     const startOfDay = new Date(now); startOfDay.setHours(0,0,0,0);
     const startOfWeek = new Date(now);
     const dayIdx = (startOfWeek.getDay() + 6) % 7; // Monday=0
@@ -64,17 +71,16 @@ export default function TotalsBar() {
     startOfWeek.setHours(0,0,0,0);
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const value = (e: Entry) =>
-      toNum(e.total_calories) || toNum(e.calories);
+    const val = (e: Entry) => toNum(e.total_calories) || toNum(e.calories);
 
     const d = entries.filter(e => new Date(e.created_at) >= startOfDay)
-      .reduce((s, e) => s + value(e), 0);
+      .reduce((s, e) => s + val(e), 0);
 
     const w = entries.filter(e => new Date(e.created_at) >= startOfWeek)
-      .reduce((s, e) => s + value(e), 0);
+      .reduce((s, e) => s + val(e), 0);
 
     const m = entries.filter(e => new Date(e.created_at) >= startOfMonth)
-      .reduce((s, e) => s + value(e), 0);
+      .reduce((s, e) => s + val(e), 0);
 
     const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
 
