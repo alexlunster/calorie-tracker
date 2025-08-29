@@ -1,7 +1,7 @@
 import './globals.css';
 import type { Metadata } from 'next';
-import { createServerComponentClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
+import { createServerClient } from '@supabase/ssr';
 
 export const metadata: Metadata = {
   title: 'Calorie Tracker',
@@ -13,30 +13,50 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  // Create a Supabase client with server-side cookies
-  const supabase = createServerComponentClient({ cookies });
+  // Build a Supabase *server* client that shares auth via cookies
+  const cookieStore = cookies();
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        set(name: string, value: string, options: any) {
+          try {
+            cookieStore.set({ name, value, ...options });
+          } catch {}
+        },
+        remove(name: string, options: any) {
+          try {
+            cookieStore.set({ name, value: '', ...options });
+          } catch {}
+        },
+      },
+    }
+  );
 
-  // Default language is English
+  // Default language
   let lang = 'en';
 
   try {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    const { data: { session } } = await supabase.auth.getSession();
 
     if (session?.user) {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('language')
-        .eq('id', session.user.id)
+      // NOTE: we read from user_prefs (not profiles)
+      const { data } = await supabase
+        .from('user_prefs')
+        .select('lang')
+        .eq('user_id', session.user.id)
         .single();
 
-      if (profile?.language) {
-        lang = profile.language; // "en", "ru", or "de"
+      if (data?.lang && ['en', 'de', 'ru'].includes(data.lang)) {
+        lang = data.lang;
       }
     }
-  } catch (err) {
-    console.warn('Language fallback to English:', err);
+  } catch {
+    // keep default 'en' on any error
   }
 
   return (
