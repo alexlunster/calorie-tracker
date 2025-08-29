@@ -1,29 +1,37 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useI18n } from "@/components/I18nProvider";
 import { pretty } from "@/lib/ui";
 
+type ModelItem = { name: string; calories: number | string };
 type AnalyzeResponse = {
   meal_name?: string;
-  items?: { name: string; calories: number | string }[];
+  items?: ModelItem[];
   total_calories?: number | string;
 };
 
-function num(v: unknown): number {
+function toNum(v: unknown): number {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : 0;
 }
 
 export default function UploadCard() {
   const { t } = useI18n();
-  const router = useRouter();
   const inputRef = useRef<HTMLInputElement | null>(null);
-
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Success toast
+  const [showToast, setShowToast] = useState(false);
+  const [toastMsg, setToastMsg] = useState("");
+
+  useEffect(() => {
+    if (!showToast) return;
+    const id = setTimeout(() => setShowToast(false), 3000);
+    return () => clearTimeout(id);
+  }, [showToast]);
 
   const pickFromGallery = () => {
     inputRef.current?.removeAttribute("capture");
@@ -46,13 +54,12 @@ export default function UploadCard() {
       if (!auth.user) throw new Error(pretty(t("please_sign_in_first") || "please_sign_in_first"));
       const userId = auth.user.id;
 
-      // Upload image to the public "photos" bucket
+      // 1) Upload image
       const file = files[0];
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
       const key = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
 
-      const { error: upErr } = await supabase
-        .storage
+      const { error: upErr } = await supabase.storage
         .from("photos")
         .upload(key, file, { cacheControl: "3600", upsert: false });
       if (upErr) throw upErr;
@@ -60,7 +67,7 @@ export default function UploadCard() {
       const { data: pub } = supabase.storage.from("photos").getPublicUrl(key);
       const imageUrl = pub.publicUrl;
 
-      // Call analyzer
+      // 2) Analyze
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -69,29 +76,27 @@ export default function UploadCard() {
       if (!res.ok) throw new Error(`Analyze failed: ${await res.text()}`);
 
       const parsed: AnalyzeResponse = await res.json();
-
-      // Normalize values for your schema
+      const mealName = (parsed.meal_name || "meal").toString();
       const itemsArray = Array.isArray(parsed.items) ? parsed.items : [];
       const normalizedItems = itemsArray.map((it) => ({
         name: (it?.name ?? "item") as string,
-        calories: num(it?.calories),
+        calories: toNum(it?.calories),
       }));
-
       const total =
-        num(parsed.total_calories) ||
-        normalizedItems.reduce((s, it) => s + num(it.calories), 0);
+        toNum(parsed.total_calories) ||
+        normalizedItems.reduce((s, it) => s + toNum(it.calories), 0);
 
-      // Insert only columns that exist in your DB
+      // 3) Insert entry (only existing columns)
       const { error: insErr } = await supabase.from("entries").insert({
         user_id: userId,
         image_url: imageUrl,
-        items: { name: parsed.meal_name ?? null, items: normalizedItems }, // jsonb
-        calories: total,          // numeric
-        total_calories: total,    // int4 NOT NULL
+        items: { name: mealName, items: normalizedItems }, // jsonb
+        calories: total,
+        total_calories: total,
       });
       if (insErr) throw insErr;
 
-      // Best-effort: keep only latest 3 images per user
+      // 4) Best-effort prune to latest 3 images
       try {
         const { data: list } = await supabase
           .from("entries")
@@ -102,15 +107,24 @@ export default function UploadCard() {
         if (list && list.length > 3) {
           const extra = list.slice(3);
           const keys = extra
-            .map((e: any) => (typeof e.image_url === "string" ? e.image_url.split("/photos/")[1] : null))
+            .map((e: any) =>
+              typeof e.image_url === "string" ? e.image_url.split("/photos/")[1] : null
+            )
             .filter(Boolean) as string[];
           if (keys.length) await supabase.storage.from("photos").remove(keys);
         }
       } catch {
-        // ignore cleanup errors
+        /* ignore cleanup errors */
       }
 
-      router.refresh();
+      // 5) Broadcast to other widgets to refresh themselves
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("entry:created", { detail: { userId } }));
+      }
+
+      // 6) Success toast
+      setToastMsg(`Saved ${Math.round(total)} kcal for "${mealName}"`);
+      setShowToast(true);
     } catch (e: any) {
       setErr(e?.message || "Upload failed");
     } finally {
@@ -123,7 +137,7 @@ export default function UploadCard() {
   }
 
   return (
-    <section className="border rounded-xl p-4 shadow-sm bg-white dark:bg-gray-900">
+    <section className="relative border rounded-xl p-4 shadow-sm bg-white dark:bg-gray-900">
       <h3 className="font-semibold mb-3">
         {pretty(t("upload_photo") || "Upload Photo")}
       </h3>
@@ -154,8 +168,29 @@ export default function UploadCard() {
         />
       </div>
 
-      {busy && <p className="text-sm text-gray-500 mt-2">{pretty(t("analyzing") || "analyzing")}…</p>}
+      {busy && (
+        <p className="text-sm text-gray-500 mt-2">
+          {pretty(t("analyzing") || "analyzing")}…
+        </p>
+      )}
       {err && <p className="text-sm text-red-600 mt-2">{pretty(err)}</p>}
+
+      {/* Success toast */}
+      {showToast && (
+        <div className="fixed left-1/2 -translate-x-1/2 bottom-4 z-50 rounded-lg bg-green-600 text-white px-4 py-2 shadow-lg">
+          <div className="flex items-center gap-3">
+            <span>✅</span>
+            <span className="text-sm">{toastMsg}</span>
+            <button
+              className="ml-2 text-white/90 hover:text-white"
+              onClick={() => setShowToast(false)}
+              aria-label="Close"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
