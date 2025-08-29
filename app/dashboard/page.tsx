@@ -79,7 +79,12 @@ export default function Dashboard() {
             const meal = labelFromItems(e.items);
             return (
               <li key={e.id} className="flex items-start gap-3">
-                <img src={e.image_url} alt="meal" className="w-20 h-20 object-cover rounded-lg border" />
+               <img
+  src={e.image_url}
+  alt="meal"
+  className="w-20 h-20 object-cover rounded-lg border"
+  onError={(ev) => { (ev.currentTarget as HTMLImageElement).src = '/placeholder.png'; }}
+/>
                 <div className="flex-1">
                   <div className="font-medium">
                     {new Date(e.created_at).toLocaleString()}
