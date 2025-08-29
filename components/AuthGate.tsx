@@ -1,68 +1,92 @@
-'use client';
-import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabaseClient';
-import { useI18n } from '@/components/I18nProvider';
+"use client";
 
-const SITE_URL =
-  process.env.NEXT_PUBLIC_SITE_URL ||
-  (typeof window !== 'undefined' ? window.location.origin : '');
+import { useState, useEffect } from "react";
+import { supabase } from "@/lib/supabaseClient";
+import UploadCard from "./UploadCard";
+import Dashboard from "./Dashboard";
+import { useI18n } from "@/components/I18nProvider";
 
-export default function AuthGate({ children }: { children: React.ReactNode }) {
+export default function AuthGate() {
   const { t } = useI18n();
-  const [user, setUser] = useState<null | { email?: string }>(null);
-  const [email, setEmail] = useState('');
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [session, setSession] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [email, setEmail] = useState("");
 
   useEffect(() => {
-    let mounted = true;
-    supabase.auth.getUser().then(({ data }) => mounted && setUser(data.user ?? null));
-    const { data: listener } = supabase.auth.onAuthStateChange((_e, session) => {
-      setUser(session?.user ?? null);
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setLoading(false);
     });
-    return () => { mounted = false; listener?.subscription.unsubscribe(); };
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  async function signIn(e: React.FormEvent) {
+  async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
-    setSending(true); setError(null);
-    try {
-      await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: SITE_URL } });
-      alert(t('magic_sent'));
-    } catch (err: any) {
-      setError(err?.message || 'Failed to send magic link');
-    } finally { setSending(false); }
+    if (!email) return;
+    const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL!;
+    await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: SITE_URL },
+    });
+    alert(t("check_email_login"));
   }
 
-  async function signOut() {
-    await supabase.auth.signOut();
+  function cleanText(text: string) {
+    return text.replaceAll("_", " ");
   }
 
-  if (!user) {
+  if (loading) return <p>{t("loading")}...</p>;
+
+  if (!session) {
     return (
-      <div className="card">
-        <h2 className="text-xl font-semibold mb-2">{t('sign_in')}</h2>
-        <form onSubmit={signIn} className="space-y-2">
-          <label className="label">{t('email')}</label>
-          <input className="input" type="email" value={email} onChange={e=>setEmail(e.target.value)} required />
-          <button className="btn btn-primary w-full" type="submit" disabled={sending}>
-            {sending ? t('analyzing') : t('send_magic')}
+      <div className="flex flex-col items-center justify-center min-h-screen">
+        <h1 className="text-2xl font-bold mb-4">{t("welcome")}</h1>
+        <form onSubmit={handleLogin} className="flex flex-col gap-2">
+          <input
+            type="email"
+            placeholder={t("your_email")}
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="border px-4 py-2 rounded"
+          />
+          <button
+            type="submit"
+            className="bg-blue-500 text-white rounded px-4 py-2"
+          >
+            {t("sign_in")}
           </button>
-          {error && <p className="text-sm text-red-600">{error}</p>}
         </form>
       </div>
     );
   }
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <div className="text-sm text-gray-600">
-          {t('signed_in_as')} <b>{user.email || 'user'}</b>
-        </div>
-        <button className="btn" onClick={signOut}>{t('sign_out')}</button>
+    <div className="min-h-screen flex flex-col">
+      {/* Signed in info with padding */}
+      <div className="px-4 py-2 text-sm text-gray-600">
+        {t("signed_in_as")} {session.user.email}
       </div>
-      {children}
+
+      <main className="flex-1 p-4 space-y-6">
+        {/* Upload photo card */}
+        <UploadCard />
+
+        {/* Recent entries & totals */}
+        <section>
+          <h2 className="text-lg font-semibold mb-2">{t("recent_entries")}</h2>
+          <Dashboard />
+
+          {/* Capitalized Totals */}
+          <h2 className="text-lg font-semibold mt-6">{t("Totals")}</h2>
+        </section>
+      </main>
     </div>
   );
 }
