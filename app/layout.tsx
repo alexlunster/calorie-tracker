@@ -2,7 +2,7 @@ import './globals.css';
 import type { Metadata } from 'next';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
-import { I18nProvider } from '@/components/I18nProvider'; // 👈 import your provider
+import I18nProvider from '@/components/I18nProvider';
 
 export const metadata: Metadata = {
   title: 'Calorie Tracker',
