@@ -107,18 +107,20 @@ export default function Dashboard() {
 }
 
 function Stat({ label, value, target }: { label: string, value: number, target: number }) {
+  const { t } = useI18n();  // add at top of file: import { useI18n } from '@/components/I18nProvider';
   const pct = target ? Math.min(100, Math.round((value / target) * 100)) : 0;
   return (
     <div>
       <div className="text-sm text-gray-600">{label}</div>
-      <div className="text-2xl font-bold">{value} kcal</div>
-      <div className="text-xs text-gray-500">{pct}% of {target} kcal</div>
+      <div className="text-2xl font-bold">{value} {t('kcal')}</div>
+      <div className="text-xs text-gray-500">{pct}% {t('of')} {target} {t('kcal')}</div>
       <div className="w-full h-2 bg-gray-200 rounded-full mt-1">
         <div className="h-2 bg-black rounded-full" style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
 }
+
 
 function GoalInput({ label, value, onChange }: { label: string, value: number, onChange: (v:number)=>void }) {
   return (
