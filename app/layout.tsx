@@ -54,14 +54,13 @@ export default async function RootLayout({
       </head>
       <body>
         <I18nProvider lang={lang}>
-          {/* 👇 App Header */}
-          <header className="flex justify-between items-center p-4 border-b bg-gray-100">
-            <h1 className="font-bold">Calorie Tracker</h1>
-            <LanguageSwitcher /> {/* 👈 Language dropdown */}
-          </header>
-
           {/* 👇 App Content */}
           <main>{children}</main>
+
+          {/* 👇 Floating Language Switcher */}
+          <div className="fixed bottom-4 right-4 z-50 bg-white dark:bg-gray-800 shadow-lg rounded-lg p-2">
+            <LanguageSwitcher />
+          </div>
         </I18nProvider>
       </body>
     </html>
