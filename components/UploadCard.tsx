@@ -3,7 +3,6 @@ import { useRef, useState } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
-import { differenceInDays } from './utils/dateDiff'; // add tiny helper below or inline
 
 export default function UploadCard() {
   const router = useRouter();
@@ -20,9 +19,7 @@ export default function UploadCard() {
     if (f) { setFile(f); setPreview(URL.createObjectURL(f)); }
   }
 
-  // ---- helpers ----
   function pathFromPublicUrl(publicUrl: string): string | null {
-    // expects .../storage/v1/object/public/photos/<path>
     const ix = publicUrl.indexOf('/storage/v1/object/public/photos/');
     if (ix === -1) return null;
     return publicUrl.slice(ix + '/storage/v1/object/public/photos/'.length);
@@ -36,7 +33,7 @@ export default function UploadCard() {
   async function cleanupOldEntriesAndImages(userId: string) {
     const now = new Date();
 
-    // 1) Delete DB entries older than 45 days (and attempt to remove their images)
+    // 1) Delete DB entries older than 45 days (and try to remove their images)
     const { data: oldEntries } = await supabase
       .from('entries')
       .select('id, image_url, created_at')
@@ -45,25 +42,21 @@ export default function UploadCard() {
       .limit(500);
 
     if (oldEntries && oldEntries.length) {
-      // remove their images (best-effort)
       const paths = oldEntries
         .map((e: any) => pathFromPublicUrl(e.image_url))
         .filter(Boolean) as string[];
       if (paths.length) {
         try { await deleteImagesByPaths(paths); } catch {}
-
       }
-      // delete entries
       await supabase.from('entries')
         .delete()
         .in('id', oldEntries.map((e: any) => e.id));
     }
 
     // 2) Keep only newest 3 images for this user
-    // List all files in user folder
     const listRes = await supabase.storage.from('photos').list(userId, {
-      limit: 1000, // adjust if you expect more
-      sortBy: { column: 'name', order: 'desc' } // we'll sort by time client-side anyway
+      limit: 1000,
+      sortBy: { column: 'created_at', order: 'desc' }
     });
 
     const files = (listRes.data || []).map((f: any) => ({
@@ -71,7 +64,6 @@ export default function UploadCard() {
       created_at: f.created_at ? new Date(f.created_at) : null
     }));
 
-    // sort newest first by created_at (fallback to name)
     files.sort((a: any, b: any) => {
       const ta = a.created_at ? a.created_at.getTime() : 0;
       const tb = b.created_at ? b.created_at.getTime() : 0;
@@ -84,7 +76,6 @@ export default function UploadCard() {
       await deleteImagesByPaths(toDelete);
     }
   }
-  // -----------------
 
   async function submit() {
     if (!file) return;
@@ -94,7 +85,7 @@ export default function UploadCard() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Please sign in first.');
 
-      // 1) Upload to Storage (user folder)
+      // 1) Upload
       const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
       const path = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
       const up = await supabase.storage.from('photos').upload(path, file);
@@ -103,7 +94,7 @@ export default function UploadCard() {
       const { data: pub } = supabase.storage.from('photos').getPublicUrl(path);
       const imageUrl = pub.publicUrl;
 
-      // 2) Analyze via API (OpenAI)
+      // 2) Analyze
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -112,7 +103,7 @@ export default function UploadCard() {
       if (!res.ok) throw new Error(`Analyze failed: ${await res.text()}`);
       const { result } = await res.json();
 
-      // 3) Insert into DB (client-side, JWT present)
+      // 3) Insert
       const { error: dbErr } = await supabase.from('entries').insert({
         image_url: imageUrl,
         items: result?.meal_name ? { meal_name: result.meal_name, items: result.items } : (result?.items ?? []),
@@ -120,7 +111,7 @@ export default function UploadCard() {
       });
       if (dbErr) throw new Error(`DB insert failed: ${dbErr.message}`);
 
-      // 4) Cleanup storage/DB (best-effort, fire-and-forget)
+      // 4) Cleanup (best-effort)
       cleanupOldEntriesAndImages(user.id).catch(() => {});
 
       router.push('/dashboard');
@@ -161,10 +152,3 @@ export default function UploadCard() {
     </div>
   );
 }
-
-/* ---- components/utils/dateDiff.ts (new tiny helper) ----
-export function differenceInDays(a: Date, b: Date) {
-  const ONE = 24*60*60*1000;
-  return Math.floor((a.getTime() - b.getTime()) / ONE);
-}
-*/
