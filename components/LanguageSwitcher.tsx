@@ -1,21 +1,23 @@
-'use client';
-import { useI18n } from './I18nProvider';
+"use client";
+
+import { useI18n } from "@/components/I18nProvider";
 
 export default function LanguageSwitcher() {
   const { lang, saveLang } = useI18n();
 
+  const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    saveLang(e.target.value);
+  };
+
   return (
-    <div className="flex items-center gap-2">
-      <select
-        className="input"
-        value={lang}
-        onChange={(e) => saveLang(e.target.value as any)}
-        aria-label="Language"
-      >
-        <option value="en">English</option>
-        <option value="de">Deutsch</option>
-        <option value="ru">Русский</option>
-      </select>
-    </div>
+    <select
+      value={lang}
+      onChange={handleChange}
+      className="border rounded p-1 text-sm bg-white dark:bg-gray-800"
+    >
+      <option value="en">🇬🇧 English</option>
+      <option value="de">🇩🇪 Deutsch</option>
+      <option value="ru">🇷🇺 Русский</option>
+    </select>
   );
 }
