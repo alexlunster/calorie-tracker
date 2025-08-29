@@ -61,24 +61,40 @@ export default function AuthGate() {
     );
   }
 
-  return (
-    <div className="min-h-screen flex flex-col">
-      {/* Signed in info with comfortable side padding */}
-      <div className="px-4 py-2 text-sm text-gray-600">
+ return (
+  <div className="min-h-screen flex flex-col">
+    {/* Signed in bar */}
+    <div className="px-4 py-2 text-sm text-gray-600 flex items-center justify-between">
+      <div>
         {pretty(t("signed_in_as"))} {session.user.email}
       </div>
-
-      <main className="flex-1 p-4 space-y-6">
-        {/* Upload photo card (home screen) */}
-        <UploadCard />
-
-        {/* Recent entries & Totals */}
-        <section className="space-y-4">
-          <h2 className="text-lg font-semibold">{pretty(t("recent_entries"))}</h2>
-          <Dashboard />
-          <h2 className="text-lg font-semibold">{pretty(t("totals"))}</h2>
-        </section>
-      </main>
+      <button
+        onClick={async () => {
+          await supabase.auth.signOut();
+          location.href = "/"; // refresh to show login form
+        }}
+        className="text-sm px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
+      >
+        {pretty(t("sign_out") || "sign_out")}
+      </button>
     </div>
-  );
-}
+
+    <main className="flex-1 p-4 space-y-6">
+      {/* HOME: Totals bar + Upload card + recent entries */}
+      <UploadCard />
+
+      <section className="space-y-4">
+        <h2 className="text-lg font-semibold">{pretty(t("recent_entries"))}</h2>
+        <Dashboard />
+
+        {/* Optional link to a full dashboard page */}
+        <a
+          href="/dashboard"
+          className="inline-block text-sm text-blue-600 hover:underline"
+        >
+          {pretty(t("go_to_dashboard") || "go_to_dashboard")}
+        </a>
+      </section>
+    </main>
+  </div>
+);
