@@ -9,9 +9,8 @@ import { pretty } from "@/lib/ui";
 type AnalyzeResponse = {
   meal_name?: string;
   calories?: number | string;
-  // some analyzers return "labels", some return structured "items"
   labels?: string[];
-  items?: any; // JSON-serializable
+  items?: any; // JSON-serializable structure if the analyzer returns it
 };
 
 export default function UploadCard() {
@@ -39,19 +38,17 @@ export default function UploadCard() {
     setErr(null);
 
     try {
-      // 1) who’s uploading
+      // 1) current user
       const { data: auth } = await supabase.auth.getUser();
       if (!auth.user) {
         throw new Error(pretty(t("please_sign_in_first") || "please_sign_in_first"));
       }
       const userId = auth.user.id;
 
-      // 2) upload to Storage
+      // 2) upload image to Storage
       const file = files[0];
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      const path = `${userId}/${Date.now()}-${Math.random()
-        .toString(36)
-        .slice(2)}.${ext}`;
+      const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
 
       const { error: upErr } = await supabase.storage
         .from("photos")
@@ -61,7 +58,7 @@ export default function UploadCard() {
       const { data: pub } = supabase.storage.from("photos").getPublicUrl(path);
       const imageUrl = pub.publicUrl;
 
-      // 3) analyze via server route
+      // 3) analyze image on server (OpenAI)
       const r = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -71,30 +68,30 @@ export default function UploadCard() {
 
       const parsed: AnalyzeResponse = await r.json();
 
-      // calories can be string (from OpenAI) → coerce safely
+      // Normalize data for your schema
       const calNum = Number(parsed.calories);
       const calories = Number.isFinite(calNum) ? calNum : 0;
 
-      // Our DB has "items" (jsonb), not "labels"
-      // - if analyzer returned structured items, use those
-      // - else if it returned a list of labels, store them as array in items
-      const items =
+      // Your table has "items jsonb" (no "labels" & no "meal_name")
+      // Put anything we got into items
+      const itemsPayload =
         parsed.items ??
-        (Array.isArray(parsed.labels) ? parsed.labels : []);
+        {
+          labels: Array.isArray(parsed.labels) ? parsed.labels : [],
+          name: parsed.meal_name ?? null,
+        };
 
-      const meal_name = parsed.meal_name ?? "meal";
-
-      // 4) insert entry (columns you have: user_id, image_url, items (jsonb), calories (numeric))
+      // 4) insert into entries with ONLY columns that exist in your schema
       const { error: insErr } = await supabase.from("entries").insert({
         user_id: userId,
         image_url: imageUrl,
-        items,        // 👈 matches your schema
-        calories,     // 👈 matches your schema
-        meal_name,    // present in your schema screenshot as text (good)
+        items: itemsPayload, // jsonb
+        calories,            // numeric
+        // Note: no meal_name field here
       });
       if (insErr) throw insErr;
 
-      // 5) optional: trim storage to newest 3 images
+      // 5) optional: keep only 3 newest images per user
       try {
         const { data: list } = await supabase
           .from("entries")
@@ -112,7 +109,7 @@ export default function UploadCard() {
           if (keys.length) await supabase.storage.from("photos").remove(keys);
         }
       } catch {
-        // non-fatal cleanup
+        /* best-effort cleanup; ignore */
       }
 
       // 6) refresh UI
