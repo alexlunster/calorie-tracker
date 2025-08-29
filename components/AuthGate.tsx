@@ -4,7 +4,8 @@ import { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import UploadCard from "./UploadCard";
 import Dashboard from "./Dashboard";
-import { useI18n } from "@/components/I18nProvider";
+import I18nProvider, { useI18n } from "@/components/I18nProvider";
+import { pretty } from "@/lib/ui";
 
 export default function AuthGate() {
   const { t } = useI18n();
@@ -20,8 +21,8 @@ export default function AuthGate() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+    } = supabase.auth.onAuthStateChange((_event, next) => {
+      setSession(next);
     });
 
     return () => subscription.unsubscribe();
@@ -35,32 +36,25 @@ export default function AuthGate() {
       email,
       options: { emailRedirectTo: SITE_URL },
     });
-    alert(t("check_email_login"));
+    alert(pretty(t("check_email_login")));
   }
 
-  function cleanText(text: string) {
-    return text.replaceAll("_", " ");
-  }
-
-  if (loading) return <p>{t("loading")}...</p>;
+  if (loading) return <p className="px-4">{pretty(t("loading"))}...</p>;
 
   if (!session) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen">
-        <h1 className="text-2xl font-bold mb-4">{t("welcome")}</h1>
-        <form onSubmit={handleLogin} className="flex flex-col gap-2">
+      <div className="flex flex-col items-center justify-center min-h-screen p-4">
+        <h1 className="text-2xl font-bold mb-4">{pretty(t("welcome"))}</h1>
+        <form onSubmit={handleLogin} className="flex flex-col gap-2 w-full max-w-xs">
           <input
             type="email"
-            placeholder={t("your_email")}
+            placeholder={pretty(t("your_email"))}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             className="border px-4 py-2 rounded"
           />
-          <button
-            type="submit"
-            className="bg-blue-500 text-white rounded px-4 py-2"
-          >
-            {t("sign_in")}
+          <button type="submit" className="bg-blue-500 text-white rounded px-4 py-2">
+            {pretty(t("sign_in"))}
           </button>
         </form>
       </div>
@@ -69,22 +63,20 @@ export default function AuthGate() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Signed in info with padding */}
+      {/* Signed in info with comfortable side padding */}
       <div className="px-4 py-2 text-sm text-gray-600">
-        {t("signed_in_as")} {session.user.email}
+        {pretty(t("signed_in_as"))} {session.user.email}
       </div>
 
       <main className="flex-1 p-4 space-y-6">
-        {/* Upload photo card */}
+        {/* Upload photo card (home screen) */}
         <UploadCard />
 
-        {/* Recent entries & totals */}
-        <section>
-          <h2 className="text-lg font-semibold mb-2">{t("recent_entries")}</h2>
+        {/* Recent entries & Totals */}
+        <section className="space-y-4">
+          <h2 className="text-lg font-semibold">{pretty(t("recent_entries"))}</h2>
           <Dashboard />
-
-          {/* Capitalized Totals */}
-          <h2 className="text-lg font-semibold mt-6">{t("Totals")}</h2>
+          <h2 className="text-lg font-semibold">{pretty(t("totals"))}</h2>
         </section>
       </main>
     </div>
