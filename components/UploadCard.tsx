@@ -8,8 +8,10 @@ import { pretty } from "@/lib/ui";
 
 type AnalyzeResponse = {
   meal_name?: string;
-  calories?: number;
+  calories?: number | string;
+  // some analyzers return "labels", some return structured "items"
   labels?: string[];
+  items?: any; // JSON-serializable
 };
 
 export default function UploadCard() {
@@ -37,49 +39,62 @@ export default function UploadCard() {
     setErr(null);
 
     try {
+      // 1) who’s uploading
       const { data: auth } = await supabase.auth.getUser();
-      if (!auth.user) throw new Error(pretty(t("please_sign_in_first") || "please_sign_in_first"));
+      if (!auth.user) {
+        throw new Error(pretty(t("please_sign_in_first") || "please_sign_in_first"));
+      }
       const userId = auth.user.id;
 
+      // 2) upload to Storage
       const file = files[0];
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+      const path = `${userId}/${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2)}.${ext}`;
 
       const { error: upErr } = await supabase.storage
         .from("photos")
         .upload(path, file, { cacheControl: "3600", upsert: false });
-
       if (upErr) throw upErr;
 
       const { data: pub } = supabase.storage.from("photos").getPublicUrl(path);
       const imageUrl = pub.publicUrl;
 
+      // 3) analyze via server route
       const r = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageUrl }),
       });
-
       if (!r.ok) throw new Error(`Analyze failed: ${await r.text()}`);
 
       const parsed: AnalyzeResponse = await r.json();
-      const meal_name = parsed.meal_name ?? "meal";
-      const calories =
-        typeof parsed.calories === "number" && !Number.isNaN(parsed.calories)
-          ? parsed.calories
-          : 0;
-      const labels = Array.isArray(parsed.labels) ? parsed.labels : [];
 
+      // calories can be string (from OpenAI) → coerce safely
+      const calNum = Number(parsed.calories);
+      const calories = Number.isFinite(calNum) ? calNum : 0;
+
+      // Our DB has "items" (jsonb), not "labels"
+      // - if analyzer returned structured items, use those
+      // - else if it returned a list of labels, store them as array in items
+      const items =
+        parsed.items ??
+        (Array.isArray(parsed.labels) ? parsed.labels : []);
+
+      const meal_name = parsed.meal_name ?? "meal";
+
+      // 4) insert entry (columns you have: user_id, image_url, items (jsonb), calories (numeric))
       const { error: insErr } = await supabase.from("entries").insert({
         user_id: userId,
         image_url: imageUrl,
-        labels,
-        calories,
-        meal_name,
+        items,        // 👈 matches your schema
+        calories,     // 👈 matches your schema
+        meal_name,    // present in your schema screenshot as text (good)
       });
       if (insErr) throw insErr;
 
-      // optional: trim storage to last 3 images
+      // 5) optional: trim storage to newest 3 images
       try {
         const { data: list } = await supabase
           .from("entries")
@@ -97,9 +112,10 @@ export default function UploadCard() {
           if (keys.length) await supabase.storage.from("photos").remove(keys);
         }
       } catch {
-        /* non-fatal */
+        // non-fatal cleanup
       }
 
+      // 6) refresh UI
       router.refresh();
     } catch (e: any) {
       setErr(e?.message || "Upload failed");
@@ -114,7 +130,9 @@ export default function UploadCard() {
 
   return (
     <section className="border rounded-xl p-4 shadow-sm bg-white dark:bg-gray-900">
-      <h3 className="font-semibold mb-3">{pretty(t("upload_photo") || "Upload Photo")}</h3>
+      <h3 className="font-semibold mb-3">
+        {pretty(t("upload_photo") || "Upload Photo")}
+      </h3>
 
       <div className="flex gap-2">
         <button
@@ -142,7 +160,11 @@ export default function UploadCard() {
         />
       </div>
 
-      {busy && <p className="text-sm text-gray-500 mt-2">{pretty(t("analyzing") || "analyzing")}…</p>}
+      {busy && (
+        <p className="text-sm text-gray-500 mt-2">
+          {pretty(t("analyzing") || "analyzing")}…
+        </p>
+      )}
       {err && <p className="text-sm text-red-600 mt-2">{pretty(err)}</p>}
     </section>
   );
