@@ -2,11 +2,13 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
-export const runtime = "nodejs"; // ensure Node (not Edge) so the SDK works
+export const runtime = "nodejs"; // use Node runtime for the OpenAI SDK
+export const dynamic = "force-dynamic"; // avoid caching, always run server-side
 
+type Item = { name: string; calories: number };
 type ModelResult = {
   meal_name: string;
-  items: { name: string; calories: number }[];
+  items: Item[];
   total_calories: number;
 };
 
@@ -19,28 +21,30 @@ function coerceNumber(v: unknown): number {
 function safeParse(content: string): ModelResult {
   try {
     const j = JSON.parse(content);
-    const itemsRaw = Array.isArray(j.items) ? j.items : [];
-    const items = itemsRaw
-      .map((it: any) => ({
-        name: typeof it?.name === "string" ? it.name : "item",
-        calories: coerceNumber(it?.calories),
-      }))
-      .filter(Boolean);
 
-    const total =
-      coerceNumber(j.total_calories) ||
-      items.reduce((s, it) => s + coerceNumber(it.calories), 0);
+    const itemsRaw: unknown = Array.isArray(j.items) ? j.items : [];
+    const items: Item[] = (itemsRaw as any[]).map((it) => ({
+      name: typeof it?.name === "string" ? it.name : "item",
+      calories: coerceNumber(it?.calories),
+    }));
+
+    const providedTotal = coerceNumber((j as any).total_calories);
+    const computedTotal = items.reduce(
+      (sum: number, it: Item) => sum + coerceNumber(it.calories),
+      0
+    );
+    const total = providedTotal || computedTotal;
 
     return {
       meal_name:
-        typeof j.meal_name === "string" && j.meal_name.trim()
-          ? j.meal_name.trim()
+        typeof (j as any).meal_name === "string" &&
+        (j as any).meal_name.trim()
+          ? (j as any).meal_name.trim()
           : "meal",
       items,
       total_calories: total,
     };
   } catch {
-    // Fallback minimal structure
     return { meal_name: "meal", items: [], total_calories: 0 };
   }
 }
@@ -55,11 +59,9 @@ export async function POST(req: Request) {
       );
     }
 
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY!,
-    });
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-    // Ask for strict JSON; the SDK returns content as a string
+    // Ask for strict JSON so we can parse reliably
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0,
@@ -78,11 +80,11 @@ export async function POST(req: Request) {
               text: `From the photo, identify the food(s) and estimate calories.
 Return JSON with this exact shape:
 {
-  "meal_name": "short human-readable name (e.g. 'banana', 'chicken salad')",
-  "items": [{"name": "banana", "calories": 105}],
+  "meal_name": "short name like 'banana' or 'chicken salad'",
+  "items": [{"name":"banana","calories":105}],
   "total_calories": 105
 }
-If unsure, give your best conservative estimate. Use kilocalories.`,
+If unsure, provide a conservative best estimate. Use kilocalories.`,
             },
             {
               type: "input_image",
@@ -93,9 +95,10 @@ If unsure, give your best conservative estimate. Use kilocalories.`,
       ],
     });
 
-    const content = completion.choices?.[0]?.message?.content ?? "{}";
-    const result = safeParse(content);
+    const content: string =
+      completion.choices?.[0]?.message?.content ?? "{}";
 
+    const result = safeParse(content);
     return NextResponse.json(result, { status: 200 });
   } catch (e: any) {
     return NextResponse.json(
