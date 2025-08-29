@@ -20,19 +20,14 @@ export default function UploadCard() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  /** Open system gallery/file picker */
   const openPicker = () => {
-    if (!inputRef.current) return;
-    // ensure no capture attribute for gallery
-    inputRef.current.removeAttribute("capture");
-    inputRef.current.click();
+    inputRef.current?.removeAttribute("capture");
+    inputRef.current?.click();
   };
 
-  /** Open camera (mainly mobile) */
   const openCamera = () => {
-    if (!inputRef.current) return;
-    inputRef.current.setAttribute("capture", "environment");
-    inputRef.current.click();
+    inputRef.current?.setAttribute("capture", "environment");
+    inputRef.current?.click();
   };
 
   async function handleFiles(files: FileList | null) {
@@ -42,12 +37,10 @@ export default function UploadCard() {
     setErr(null);
 
     try {
-      // 1) auth
       const { data: auth } = await supabase.auth.getUser();
       if (!auth.user) throw new Error(pretty(t("please_sign_in_first") || "please_sign_in_first"));
       const userId = auth.user.id;
 
-      // 2) upload to Storage (bucket: photos)
       const file = files[0];
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
       const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
@@ -58,21 +51,16 @@ export default function UploadCard() {
 
       if (upErr) throw upErr;
 
-      // public URL (or use signed URL if your bucket is private)
       const { data: pub } = supabase.storage.from("photos").getPublicUrl(path);
       const imageUrl = pub.publicUrl;
 
-      // 3) call analyzer
       const r = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageUrl }),
       });
 
-      if (!r.ok) {
-        const msg = await r.text();
-        throw new Error(`Analyze failed: ${msg}`);
-      }
+      if (!r.ok) throw new Error(`Analyze failed: ${await r.text()}`);
 
       const parsed: AnalyzeResponse = await r.json();
       const meal_name = parsed.meal_name ?? "meal";
@@ -82,9 +70,8 @@ export default function UploadCard() {
           : 0;
       const labels = Array.isArray(parsed.labels) ? parsed.labels : [];
 
-      // 4) insert entry
       const { error: insErr } = await supabase.from("entries").insert({
-        user_id: userId, // required by RLS
+        user_id: userId,
         image_url: imageUrl,
         labels,
         calories,
@@ -92,38 +79,33 @@ export default function UploadCard() {
       });
       if (insErr) throw insErr;
 
-      // 5) trim storage (keep newest 3 images)
+      // optional: trim storage to last 3 images
       try {
-        const { data: list, error: listErr } = await supabase
+        const { data: list } = await supabase
           .from("entries")
-          .select("id,image_url,created_at")
+          .select("image_url, created_at")
           .eq("user_id", userId)
           .order("created_at", { ascending: false });
 
-        if (!listErr && list && list.length > 3) {
+        if (list && list.length > 3) {
           const older = list.slice(3);
-          const keysToRemove: string[] = [];
+          const keys: string[] = [];
           for (const e of older) {
-            const key = e.image_url?.split("/photos/")[1];
-            if (key) keysToRemove.push(key);
+            const k = e.image_url?.split("/photos/")[1];
+            if (k) keys.push(k);
           }
-          if (keysToRemove.length) {
-            // Best-effort; DB cleanup can be handled by scheduled job too
-            await supabase.storage.from("photos").remove(keysToRemove);
-          }
+          if (keys.length) await supabase.storage.from("photos").remove(keys);
         }
       } catch {
-        /* non-fatal cleanup */
+        /* non-fatal */
       }
 
-      // 6) refresh UI
       router.refresh();
     } catch (e: any) {
       setErr(e?.message || "Upload failed");
     } finally {
       setBusy(false);
       if (inputRef.current) {
-        // reset input so picking the same file again triggers change
         inputRef.current.value = "";
         inputRef.current.removeAttribute("capture");
       }
@@ -131,8 +113,8 @@ export default function UploadCard() {
   }
 
   return (
-    <div className="border rounded-xl p-4 shadow-sm bg-white dark:bg-gray-900">
-      <h3 className="font-semibold mb-3">{pretty(t("upload_photo") || "upload_photo")}</h3>
+    <section className="border rounded-xl p-4 shadow-sm bg-white dark:bg-gray-900">
+      <h3 className="font-semibold mb-3">{pretty(t("upload_photo") || "Upload Photo")}</h3>
 
       <div className="flex gap-2">
         <button
@@ -140,7 +122,7 @@ export default function UploadCard() {
           className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-60"
           disabled={busy}
         >
-          {pretty(t("take_photo") || "take_photo")}
+          {pretty(t("take_photo") || "take photo")}
         </button>
 
         <button
@@ -148,10 +130,9 @@ export default function UploadCard() {
           className="px-3 py-2 rounded bg-gray-800 text-white disabled:opacity-60"
           disabled={busy}
         >
-          {pretty(t("choose_from_gallery") || "choose_from_gallery")}
+          {pretty(t("choose_from_gallery") || "choose from gallery")}
         </button>
 
-        {/* hidden input used by both buttons */}
         <input
           ref={inputRef}
           type="file"
@@ -161,12 +142,8 @@ export default function UploadCard() {
         />
       </div>
 
-      {busy && (
-        <p className="text-sm text-gray-500 mt-2">
-          {pretty(t("analyzing") || "analyzing")}…
-        </p>
-      )}
+      {busy && <p className="text-sm text-gray-500 mt-2">{pretty(t("analyzing") || "analyzing")}…</p>}
       {err && <p className="text-sm text-red-600 mt-2">{pretty(err)}</p>}
-    </div>
+    </section>
   );
 }
