@@ -1,154 +1,149 @@
-'use client';
-import { useRef, useState } from 'react';
-import Image from 'next/image';
-import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabaseClient";
+import { useI18n } from "@/components/I18nProvider";
+import { pretty } from "@/lib/ui";
+
+type AnalyzeResponse = {
+  meal_name?: string;
+  calories?: number;
+  labels?: string[];
+};
 
 export default function UploadCard() {
+  const { t } = useI18n();
   const router = useRouter();
-  const cameraInputRef = useRef<HTMLInputElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // open file picker (gallery)
+  const openPicker = () => inputRef.current?.click();
 
-  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    if (f) { setFile(f); setPreview(URL.createObjectURL(f)); }
-  }
+  // camera capture for mobile
+  const openCamera = () => {
+    inputRef.current?.setAttribute("capture", "environment");
+    inputRef.current?.click();
+    // reset after click so next time gallery works too
+    setTimeout(() => inputRef.current?.removeAttribute("capture"), 1000);
+  };
 
-  function pathFromPublicUrl(publicUrl: string): string | null {
-    const ix = publicUrl.indexOf('/storage/v1/object/public/photos/');
-    if (ix === -1) return null;
-    return publicUrl.slice(ix + '/storage/v1/object/public/photos/'.length);
-  }
-
-  async function deleteImagesByPaths(paths: string[]) {
-    if (!paths.length) return;
-    await supabase.storage.from('photos').remove(paths);
-  }
-
-  async function cleanupOldEntriesAndImages(userId: string) {
-    const now = new Date();
-
-    // 1) Delete DB entries older than 45 days (and try to remove their images)
-    const { data: oldEntries } = await supabase
-      .from('entries')
-      .select('id, image_url, created_at')
-      .eq('user_id', userId)
-      .lt('created_at', new Date(now.getTime() - 45 * 24 * 60 * 60 * 1000).toISOString())
-      .limit(500);
-
-    if (oldEntries && oldEntries.length) {
-      const paths = oldEntries
-        .map((e: any) => pathFromPublicUrl(e.image_url))
-        .filter(Boolean) as string[];
-      if (paths.length) {
-        try { await deleteImagesByPaths(paths); } catch {}
-      }
-      await supabase.from('entries')
-        .delete()
-        .in('id', oldEntries.map((e: any) => e.id));
-    }
-
-    // 2) Keep only newest 3 images for this user
-    const listRes = await supabase.storage.from('photos').list(userId, {
-      limit: 1000,
-      sortBy: { column: 'created_at', order: 'desc' }
-    });
-
-    const files = (listRes.data || []).map((f: any) => ({
-      name: f.name,
-      created_at: f.created_at ? new Date(f.created_at) : null
-    }));
-
-    files.sort((a: any, b: any) => {
-      const ta = a.created_at ? a.created_at.getTime() : 0;
-      const tb = b.created_at ? b.created_at.getTime() : 0;
-      if (tb !== ta) return tb - ta;
-      return (b.name || '').localeCompare(a.name || '');
-    });
-
-    const toDelete = files.slice(3).map(f => `${userId}/${f.name}`);
-    if (toDelete.length) {
-      await deleteImagesByPaths(toDelete);
-    }
-  }
-
-  async function submit() {
-    if (!file) return;
-    setLoading(true); setError(null);
+  async function handleFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setBusy(true);
+    setErr(null);
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Please sign in first.');
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth.user) {
+        throw new Error(pretty(t("please_sign_in_first") || "please_sign_in_first"));
+      }
+      const userId = auth.user.id;
 
-      // 1) Upload
-      const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
-      const path = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-      const up = await supabase.storage.from('photos').upload(path, file);
-      if (up.error) throw new Error(`Storage upload failed: ${up.error.message}`);
+      const file = files[0];
+      const ext = file.name.split(".").pop() || "jpg";
+      const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
 
-      const { data: pub } = supabase.storage.from('photos').getPublicUrl(path);
-      const imageUrl = pub.publicUrl;
-
-      // 2) Analyze
-      const res = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageUrl })
+      // Upload to Supabase Storage (bucket 'photos')
+      const { data: up, error: upErr } = await supabase.storage.from("photos").upload(path, file, {
+        cacheControl: "3600",
+        upsert: false,
       });
-      if (!res.ok) throw new Error(`Analyze failed: ${await res.text()}`);
-      const { result } = await res.json();
+      if (upErr) throw upErr;
 
-      // 3) Insert
-      const { error: dbErr } = await supabase.from('entries').insert({
+      // Public (or signed) URL
+      const { data: publicUrl } = supabase.storage.from("photos").getPublicUrl(path);
+      const imageUrl = publicUrl.publicUrl;
+
+      // Call analyze API
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageUrl }),
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`Analyze failed: ${txt}`);
+      }
+
+      const parsed: AnalyzeResponse = await res.json();
+
+      const meal_name = parsed.meal_name || "meal";
+      const calories = typeof parsed.calories === "number" ? parsed.calories : 0;
+      const labels = parsed.labels || [];
+
+      // Save entry
+      const { error: insErr } = await supabase.from("entries").insert({
+        user_id: userId,
         image_url: imageUrl,
-        items: result?.meal_name ? { meal_name: result.meal_name, items: result.items } : (result?.items ?? []),
-        total_calories: result?.total_calories ?? 0
+        labels,
+        calories,
+        meal_name,
       });
-      if (dbErr) throw new Error(`DB insert failed: ${dbErr.message}`);
+      if (insErr) throw insErr;
 
-      // 4) Cleanup (best-effort)
-      cleanupOldEntriesAndImages(user.id).catch(() => {});
+      // Keep only 3 photos (storage control) – server-side job also enforces this, but we trim on client too.
+      try {
+        const { data: list, error: listErr } = await supabase
+          .from("entries")
+          .select("id, image_url, created_at")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false });
 
-      router.push('/dashboard');
+        if (!listErr && list && list.length > 3) {
+          const older = list.slice(3);
+          // remove only from storage; keep DB cleanup for the scheduled job
+          for (const e of older) {
+            const key = e.image_url.split("/photos/")[1];
+            if (key) await supabase.storage.from("photos").remove([key]);
+          }
+        }
+      } catch {
+        // non-fatal
+      }
+
+      router.refresh();
     } catch (e: any) {
-      setError(e.message || 'Something went wrong');
+      setErr(e?.message || "Upload failed");
     } finally {
-      setLoading(false);
-      setFile(null);
-      setPreview(null);
-      if (cameraInputRef.current) cameraInputRef.current.value = '';
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = "";
     }
   }
 
   return (
-    <div className="card space-y-3">
-      <div className="label">Add a meal photo</div>
+    <div className="border rounded-xl p-4 shadow-sm bg-white dark:bg-gray-900">
+      <h3 className="font-semibold mb-2">{pretty(t("upload_photo"))}</h3>
 
-      <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" onChange={onPick} className="hidden" />
-      <input ref={fileInputRef} type="file" accept="image/*" onChange={onPick} className="hidden" />
-
-      <div className="grid grid-cols-2 gap-2">
-        <button className="btn w-full" onClick={() => cameraInputRef.current?.click()}>Take Photo</button>
-        <button className="btn w-full" onClick={() => fileInputRef.current?.click()}>Choose from Device</button>
+      <div className="flex gap-2">
+        <button
+          onClick={openCamera}
+          className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-60"
+          disabled={busy}
+        >
+          {pretty(t("take_photo") || "take_photo")}
+        </button>
+        <button
+          onClick={openPicker}
+          className="px-3 py-2 rounded bg-gray-800 text-white disabled:opacity-60"
+          disabled={busy}
+        >
+          {pretty(t("choose_from_gallery") || "choose_from_gallery")}
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => handleFiles(e.target.files)}
+        />
       </div>
 
-      {preview && (
-        <div className="relative w-full h-64">
-          <Image src={preview} alt="preview" fill className="object-contain rounded-xl" />
-        </div>
-      )}
-
-      <button disabled={!file || loading} onClick={submit} className="btn btn-primary w-full">
-        {loading ? 'Analyzing…' : 'Upload & Analyze'}
-      </button>
-
-      {error && <p className="text-red-600 text-sm">{error}</p>}
+      {busy && <p className="text-sm text-gray-500 mt-2">{pretty(t("analyzing"))}…</p>}
+      {err && <p className="text-sm text-red-600 mt-2">{pretty(err)}</p>}
     </div>
   );
 }
