@@ -1,23 +1,12 @@
 import withPWAInit from 'next-pwa';
 
-// initialize plugin
-const withPWA = withPWAInit({
-  dest: 'public',
-  register: true,
-  skipWaiting: true,
-  disable: process.env.NODE_ENV === 'development',
-  fallbacks: {
-    document: '/offline.html',
-  },
-});
-
-// Build regex for Supabase host (optional safety)
+// Build regex for Supabase host (used in runtime caching rule)
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 let supabaseHost = '.*';
 try {
   supabaseHost = new URL(supabaseUrl).host.replace(/\./g, '\\.');
 } catch {
-  // leave fallback
+  // leave fallback if env is missing during build
 }
 
 const runtimeCaching = [
@@ -30,6 +19,7 @@ const runtimeCaching = [
     },
   },
   {
+    // Cache Supabase meal photos (public or signed)
     urlPattern: new RegExp(`^https://${supabaseHost}/storage/v1/object/(public|sign)/photos/`),
     handler: 'StaleWhileRevalidate',
     method: 'GET',
@@ -40,14 +30,17 @@ const runtimeCaching = [
   },
 ];
 
-// Export final config with plugin applied
+// Initialize plugin with ALL pwa options here
+const withPWA = withPWAInit({
+  dest: 'public',
+  register: true,
+  skipWaiting: true,
+  disable: process.env.NODE_ENV === 'development',
+  fallbacks: { document: '/offline.html' },
+  runtimeCaching,
+});
+
+// Export final Next config (no experimental.appDir, no pwa key)
 export default withPWA({
-  // your Next.js config here
   reactStrictMode: true,
-  experimental: {
-    appDir: true,
-  },
-  pwa: {
-    runtimeCaching,
-  },
 });
