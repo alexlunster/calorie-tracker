@@ -36,6 +36,9 @@ const DICTS: Dicts = {
     dashboard: 'Dashboard',
     please_sign_in: 'Please sign in first.',
     storage_upload_failed: 'Storage upload failed',
+    kcal: 'kcal',
+    of: 'of',
+    no_entries_yet: 'No entries yet.',
   },
   de: {
     app_title: 'Kalorienzähler',
@@ -66,6 +69,9 @@ const DICTS: Dicts = {
     dashboard: 'Dashboard',
     please_sign_in: 'Bitte zuerst anmelden.',
     storage_upload_failed: 'Upload fehlgeschlagen',
+    kcal: 'kcal',
+    of: 'von',
+    no_entries_yet: 'Noch keine Einträge.',
   },
   ru: {
     app_title: 'Счётчик калорий',
@@ -75,7 +81,7 @@ const DICTS: Dicts = {
     email: 'E-mail',
     send_magic: 'Отправить магическую ссылку',
     magic_sent: 'Ссылка отправлена. Проверьте почту.',
-    totals: 'Итого',
+    totals: 'Итоги',
     today: 'Сегодня',
     this_week: 'Эта неделя',
     this_month: 'Этот месяц',
@@ -96,8 +102,12 @@ const DICTS: Dicts = {
     dashboard: 'Панели',
     please_sign_in: 'Сначала войдите.',
     storage_upload_failed: 'Ошибка загрузки',
+    kcal: 'ккал',
+    of: 'из',
+    no_entries_yet: 'Пока нет записей.',
   },
 };
+
 
 type I18nCtx = {
   lang: Lang;
