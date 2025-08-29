@@ -8,10 +8,14 @@ import { pretty } from "@/lib/ui";
 
 type AnalyzeResponse = {
   meal_name?: string;
-  calories?: number | string;
-  labels?: string[];
-  items?: any;
+  items?: { name: string; calories: number | string }[];
+  total_calories?: number | string;
 };
+
+function num(v: unknown): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 
 export default function UploadCard() {
   const { t } = useI18n();
@@ -21,12 +25,12 @@ export default function UploadCard() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const openPicker = () => {
+  const pickFromGallery = () => {
     inputRef.current?.removeAttribute("capture");
     inputRef.current?.click();
   };
 
-  const openCamera = () => {
+  const takePhoto = () => {
     inputRef.current?.setAttribute("capture", "environment");
     inputRef.current?.click();
   };
@@ -38,57 +42,56 @@ export default function UploadCard() {
     setErr(null);
 
     try {
-      // 1) current user
       const { data: auth } = await supabase.auth.getUser();
-      if (!auth.user) {
-        throw new Error(pretty(t("please_sign_in_first") || "please_sign_in_first"));
-      }
+      if (!auth.user) throw new Error(pretty(t("please_sign_in_first") || "please_sign_in_first"));
       const userId = auth.user.id;
 
-      // 2) upload image
+      // Upload image to the public "photos" bucket
       const file = files[0];
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+      const key = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
 
-      const { error: upErr } = await supabase.storage
+      const { error: upErr } = await supabase
+        .storage
         .from("photos")
-        .upload(path, file, { cacheControl: "3600", upsert: false });
+        .upload(key, file, { cacheControl: "3600", upsert: false });
       if (upErr) throw upErr;
 
-      const { data: pub } = supabase.storage.from("photos").getPublicUrl(path);
+      const { data: pub } = supabase.storage.from("photos").getPublicUrl(key);
       const imageUrl = pub.publicUrl;
 
-      // 3) analyze
-      const r = await fetch("/api/analyze", {
+      // Call analyzer
+      const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageUrl }),
       });
-      if (!r.ok) throw new Error(`Analyze failed: ${await r.text()}`);
+      if (!res.ok) throw new Error(`Analyze failed: ${await res.text()}`);
 
-      const parsed: AnalyzeResponse = await r.json();
+      const parsed: AnalyzeResponse = await res.json();
 
-      const calNum = Number(parsed.calories);
-      const calories = Number.isFinite(calNum) ? calNum : 0;
+      // Normalize values for your schema
+      const itemsArray = Array.isArray(parsed.items) ? parsed.items : [];
+      const normalizedItems = itemsArray.map((it) => ({
+        name: (it?.name ?? "item") as string,
+        calories: num(it?.calories),
+      }));
 
-      const itemsPayload =
-        parsed.items ??
-        {
-          labels: Array.isArray(parsed.labels) ? parsed.labels : [],
-          name: parsed.meal_name ?? null,
-        };
+      const total =
+        num(parsed.total_calories) ||
+        normalizedItems.reduce((s, it) => s + num(it.calories), 0);
 
-      // 4) insert into entries (include total_calories!)
+      // Insert only columns that exist in your DB
       const { error: insErr } = await supabase.from("entries").insert({
         user_id: userId,
         image_url: imageUrl,
-        items: itemsPayload,
-        calories,
-        total_calories: calories, // 👈 required, not null
+        items: { name: parsed.meal_name ?? null, items: normalizedItems }, // jsonb
+        calories: total,          // numeric
+        total_calories: total,    // int4 NOT NULL
       });
       if (insErr) throw insErr;
 
-      // 5) cleanup old images
+      // Best-effort: keep only latest 3 images per user
       try {
         const { data: list } = await supabase
           .from("entries")
@@ -97,16 +100,14 @@ export default function UploadCard() {
           .order("created_at", { ascending: false });
 
         if (list && list.length > 3) {
-          const older = list.slice(3);
-          const keys: string[] = [];
-          for (const e of older) {
-            const k = e.image_url?.split("/photos/")[1];
-            if (k) keys.push(k);
-          }
+          const extra = list.slice(3);
+          const keys = extra
+            .map((e: any) => (typeof e.image_url === "string" ? e.image_url.split("/photos/")[1] : null))
+            .filter(Boolean) as string[];
           if (keys.length) await supabase.storage.from("photos").remove(keys);
         }
       } catch {
-        /* ignore */
+        // ignore cleanup errors
       }
 
       router.refresh();
@@ -129,7 +130,7 @@ export default function UploadCard() {
 
       <div className="flex gap-2">
         <button
-          onClick={openCamera}
+          onClick={takePhoto}
           className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-60"
           disabled={busy}
         >
@@ -137,7 +138,7 @@ export default function UploadCard() {
         </button>
 
         <button
-          onClick={openPicker}
+          onClick={pickFromGallery}
           className="px-3 py-2 rounded bg-gray-800 text-white disabled:opacity-60"
           disabled={busy}
         >
@@ -153,11 +154,7 @@ export default function UploadCard() {
         />
       </div>
 
-      {busy && (
-        <p className="text-sm text-gray-500 mt-2">
-          {pretty(t("analyzing") || "analyzing")}…
-        </p>
-      )}
+      {busy && <p className="text-sm text-gray-500 mt-2">{pretty(t("analyzing") || "analyzing")}…</p>}
       {err && <p className="text-sm text-red-600 mt-2">{pretty(err)}</p>}
     </section>
   );
