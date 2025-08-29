@@ -6,7 +6,7 @@ import { pretty, pct } from "@/lib/ui";
 import { useI18n } from "@/components/I18nProvider";
 
 type Entry = {
-  calories: number | null;
+  calories: number | string | null;
   created_at: string;
 };
 
@@ -19,25 +19,40 @@ export default function TotalsBar() {
   useEffect(() => {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
-      if (!auth.user) return;
+      if (!auth.user) {
+        setLoading(false);
+        return;
+      }
 
-      // pull last 60 days of entries (more than enough for month calc)
-      const { data: rows } = await supabase
+      // fetch recent entries (last 60 days is enough to cover month calc)
+      const { data: rows, error: rowsErr } = await supabase
         .from("entries")
         .select("calories, created_at")
         .eq("user_id", auth.user.id)
-        .gte("created_at", new Date(Date.now() - 1000 * 60 * 60 * 24 * 60).toISOString())
+        .gte(
+          "created_at",
+          new Date(Date.now() - 1000 * 60 * 60 * 24 * 60).toISOString()
+        )
         .order("created_at", { ascending: false });
 
-      if (rows) setEntries(rows as Entry[]);
+      if (rowsErr) {
+        // non-fatal: log and continue with empty list
+        console.warn("TotalsBar entries error:", rowsErr);
+      } else if (rows) {
+        setEntries(rows as Entry[]);
+      }
 
-      // pull daily target if exists
-      const { data: prof } = await supabase
+      // fetch daily target if present
+      const { data: prof, error: profErr } = await supabase
         .from("profiles")
         .select("daily_target")
         .eq("id", auth.user.id)
         .maybeSingle();
-      if (prof?.daily_target) setDailyTarget(prof.daily_target);
+
+      if (!profErr && prof?.daily_target) {
+        const n = Number(prof.daily_target);
+        if (Number.isFinite(n)) setDailyTarget(n);
+      }
 
       setLoading(false);
     })();
@@ -56,7 +71,12 @@ export default function TotalsBar() {
 
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const toNum = (v: number | null | undefined) => (typeof v === "number" ? v : 0);
+    // robust numeric coercion (handles string "123.4", number 123.4, null, etc.)
+    const toNum = (v: number | string | null | undefined) => {
+      if (v == null) return 0;
+      const n = typeof v === "number" ? v : Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
 
     const d = entries
       .filter((e) => new Date(e.created_at) >= startOfDay)
@@ -104,7 +124,11 @@ export default function TotalsBar() {
         />
       </div>
 
-      {loading && <p className="text-sm text-gray-500">{pretty(t("loading") || "loading")}…</p>}
+      {loading && (
+        <p className="text-sm text-gray-500">
+          {pretty(t("loading") || "loading")}…
+        </p>
+      )}
     </section>
   );
 }
