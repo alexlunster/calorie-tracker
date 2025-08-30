@@ -7,9 +7,9 @@ import { pretty } from "@/lib/ui";
 
 export default function AuthGate({ children }: { children?: React.ReactNode }) {
   const { t } = useI18n();
-  const [session, setSession] = useState<Awaited<
-    ReturnType<typeof supabase.auth.getSession>
-  >["data"]["session"] | null>(null);
+  const [session, setSession] = useState<
+    Awaited<ReturnType<typeof supabase.auth.getSession>>["data"]["session"] | null
+  >(null);
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
@@ -34,6 +34,18 @@ export default function AuthGate({ children }: { children?: React.ReactNode }) {
     };
   }, []);
 
+  // --- NEW: build a redirect that points back to the PWA callback route
+  function buildRedirectTo(): string {
+    // Prefer an explicit env var (Vercel: NEXT_PUBLIC_SITE_URL), else fall back to current origin.
+    const base =
+      (typeof process !== "undefined" && process.env.NEXT_PUBLIC_SITE_URL) ||
+      (typeof window !== "undefined" ? window.location.origin : "");
+
+    // Normalize; ensure no trailing slash then append /auth/callback
+    const normalized = base.replace(/\/+$/, "");
+    return `${normalized}/auth/callback`;
+  }
+
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -43,11 +55,18 @@ export default function AuthGate({ children }: { children?: React.ReactNode }) {
     }
     try {
       setSending(true);
-      const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL!;
+
+      const redirectTo = buildRedirectTo();
+
       const { error: signErr } = await supabase.auth.signInWithOtp({
         email,
-        options: { emailRedirectTo: SITE_URL },
+        options: {
+          emailRedirectTo: redirectTo,
+          // keep/create user if needed without throwing
+          shouldCreateUser: true,
+        },
       });
+
       if (signErr) throw signErr;
       alert(pretty(t("check_email_login") || "check_email_login"));
     } catch (err: any) {
@@ -65,7 +84,9 @@ export default function AuthGate({ children }: { children?: React.ReactNode }) {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <p className="text-sm text-gray-500">{pretty(t("loading") || "loading")}…</p>
+        <p className="text-sm text-gray-500">
+          {pretty(t("loading") || "loading")}…
+        </p>
       </div>
     );
   }
@@ -73,7 +94,9 @@ export default function AuthGate({ children }: { children?: React.ReactNode }) {
   if (!session) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-4">
-        <h1 className="text-2xl font-bold mb-4">{pretty(t("welcome") || "welcome")}</h1>
+        <h1 className="text-2xl font-bold mb-4">
+          {pretty(t("welcome") || "welcome")}
+        </h1>
 
         <form onSubmit={handleLogin} className="w-full max-w-sm space-y-3">
           <input
