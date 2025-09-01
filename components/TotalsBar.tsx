@@ -1,129 +1,205 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { pretty, pct } from "@/lib/ui";
 import { useI18n } from "@/components/I18nProvider";
+import { pretty } from "@/lib/ui";
 
-type Entry = {
-  calories?: number | string | null;
-  total_calories?: number | string | null;
-  created_at: string;
+// small util so we don't explode on weird data
+const n = (v: any) => (typeof v === "number" && !isNaN(v) ? v : Number(v ?? 0) || 0);
+
+type Totals = {
+  day: number;
+  week: number;
+  month: number;
 };
 
-function toNum(v: unknown): number {
-  if (v === null || v === undefined) return 0;
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
+type Goals = {
+  daily_target: number | null;
+  weekly_target: number | null;
+  monthly_target: number | null;
+};
 
 export default function TotalsBar() {
   const { t } = useI18n();
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [dailyTarget, setDailyTarget] = useState<number>(2000);
+
   const [loading, setLoading] = useState(true);
+  const [totals, setTotals] = useState<Totals>({ day: 0, week: 0, month: 0 });
+  const [goals, setGoals] = useState<Goals>({
+    daily_target: null,
+    weekly_target: null,
+    monthly_target: null,
+  });
+  const [err, setErr] = useState<string | null>(null);
 
-  const fetchData = useCallback(async () => {
-    const { data: auth } = await supabase.auth.getUser();
-    if (!auth.user) {
-      setEntries([]);
+  // --- fetch helpers ---------------------------------------------------------
+  async function getUserId() {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) throw error;
+    if (!data.user) throw new Error("not_authenticated");
+    return data.user.id;
+  }
+
+  function rangeFor(type: "day" | "week" | "month") {
+    const now = new Date();
+    const start = new Date(now);
+    const end = new Date(now);
+    if (type === "day") {
+      start.setHours(0, 0, 0, 0);
+      end.setDate(start.getDate() + 1);
+      end.setHours(0, 0, 0, 0);
+    } else if (type === "week") {
+      const d = start.getDay(); // 0 Sun..6 Sat
+      const diff = (d + 6) % 7; // make Monday the start
+      start.setDate(start.getDate() - diff);
+      start.setHours(0, 0, 0, 0);
+      end.setDate(start.getDate() + 7);
+      end.setHours(0, 0, 0, 0);
+    } else {
+      start.setDate(1);
+      start.setHours(0, 0, 0, 0);
+      end.setMonth(start.getMonth() + 1, 1);
+      end.setHours(0, 0, 0, 0);
+    }
+    return { start: start.toISOString(), end: end.toISOString() };
+  }
+
+  async function fetchTotalsAndGoals() {
+    setLoading(true);
+    setErr(null);
+    try {
+      const userId = await getUserId();
+
+      // fetch goals
+      const { data: g, error: gErr } = await supabase
+        .from("goals")
+        .select("daily_target, weekly_target, monthly_target")
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (gErr) throw gErr;
+
+      // compute totals client-side (works with RLS)
+      const types: Array<keyof Totals> = ["day", "week", "month"];
+      const sums: Totals = { day: 0, week: 0, month: 0 };
+
+      for (const k of types) {
+        const { start, end } = rangeFor(k);
+        const { data: rows, error: e } = await supabase
+          .from("entries")
+          .select("total_calories, calories, created_at")
+          .eq("user_id", userId)
+          .gte("created_at", start)
+          .lt("created_at", end);
+        if (e) throw e;
+
+        let sum = 0;
+        (rows || []).forEach((r: any) => {
+          // prefer total_calories, fallback to calories
+          sum += n(r.total_calories ?? r.calories ?? 0);
+        });
+        sums[k] = sum;
+      }
+
+      setGoals({
+        daily_target: g?.daily_target ?? null,
+        weekly_target: g?.weekly_target ?? null,
+        monthly_target: g?.monthly_target ?? null,
+      });
+      setTotals(sums);
+    } catch (e: any) {
+      setErr(e?.message ?? "failed");
+    } finally {
       setLoading(false);
-      return;
     }
+  }
 
-    const { data: rows } = await supabase
-      .from("entries")
-      .select("calories, total_calories, created_at")
-      .eq("user_id", auth.user.id)
-      .gte("created_at", new Date(Date.now() - 1000 * 60 * 60 * 24 * 60).toISOString())
-      .order("created_at", { ascending: false });
-    if (rows) setEntries(rows as Entry[]);
+  useEffect(() => {
+    fetchTotalsAndGoals();
 
-    const { data: prof } = await supabase
-      .from("profiles")
-      .select("daily_target")
-      .eq("id", auth.user.id)
-      .maybeSingle();
-    if (prof?.daily_target) {
-      const n = Number(prof.daily_target);
-      if (Number.isFinite(n)) setDailyTarget(n);
-    }
-    setLoading(false);
+    // refresh totals when targets get updated
+    const onGoals = () => fetchTotalsAndGoals();
+    // and when a new entry is added (UploadCard can dispatch this)
+    const onEntry = () => fetchTotalsAndGoals();
+    // also refetch when tab regains focus
+    const onVis = () => {
+      if (document.visibilityState === "visible") fetchTotalsAndGoals();
+    };
+
+    window.addEventListener("goals-updated", onGoals);
+    window.addEventListener("entry-added", onEntry);
+    document.addEventListener("visibilitychange", onVis);
+
+    return () => {
+      window.removeEventListener("goals-updated", onGoals);
+      window.removeEventListener("entry-added", onEntry);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  const cards = useMemo(() => {
+    const dGoal = n(goals.daily_target);
+    // if weekly/monthly are null, derive from daily so progress works immediately
+    const wGoal = n(goals.weekly_target ?? (dGoal ? dGoal * 7 : 0));
+    const mGoal = n(goals.monthly_target ?? (dGoal ? dGoal * 30 : 0));
 
-  useEffect(() => {
-    // live update on new entries
-    const onCreated = () => { void fetchData(); };
-    window.addEventListener("entry:created", onCreated as EventListener);
-    return () => window.removeEventListener("entry:created", onCreated as EventListener);
-  }, [fetchData]);
+    return [
+      {
+        label: pretty(t("today") || "today"),
+        value: totals.day,
+        goal: dGoal,
+      },
+      {
+        label: pretty(t("this_week") || "this_week"),
+        value: totals.week,
+        goal: wGoal,
+      },
+      {
+        label: pretty(t("this_month") || "this_month"),
+        value: totals.month,
+        goal: mGoal,
+      },
+    ];
+  }, [totals, goals, t]);
 
-  const { day, week, month, weekTarget, monthTarget } = useMemo(() => {
-    const now = new Date();
-    const startOfDay = new Date(now); startOfDay.setHours(0,0,0,0);
-    const startOfWeek = new Date(now);
-    const dayIdx = (startOfWeek.getDay() + 6) % 7; // Monday=0
-    startOfWeek.setDate(startOfWeek.getDate() - dayIdx);
-    startOfWeek.setHours(0,0,0,0);
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  if (loading) {
+    return (
+      <div className="rounded-lg border p-4 text-sm text-gray-500">
+        {pretty(t("loading") || "loading")}…
+      </div>
+    );
+  }
 
-    const val = (e: Entry) => toNum(e.total_calories) || toNum(e.calories);
-
-    const d = entries.filter(e => new Date(e.created_at) >= startOfDay)
-      .reduce((s, e) => s + val(e), 0);
-
-    const w = entries.filter(e => new Date(e.created_at) >= startOfWeek)
-      .reduce((s, e) => s + val(e), 0);
-
-    const m = entries.filter(e => new Date(e.created_at) >= startOfMonth)
-      .reduce((s, e) => s + val(e), 0);
-
-    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-
-    return {
-      day: d,
-      week: w,
-      month: m,
-      weekTarget: dailyTarget * 7,
-      monthTarget: dailyTarget * daysInMonth,
-    };
-  }, [entries, dailyTarget]);
+  if (err) {
+    return (
+      <div className="rounded-lg border p-4 text-sm text-red-600">
+        {pretty(err)}
+      </div>
+    );
+  }
 
   return (
-    <section className="space-y-3">
-      <h2 className="text-xl font-semibold">{pretty(t("totals") || "Totals")}</h2>
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <TotalCard label={pretty(t("day") || "day")} value={day} target={dailyTarget} />
-        <TotalCard label={pretty(t("week") || "week")} value={week} target={weekTarget} />
-        <TotalCard label={pretty(t("month") || "month")} value={month} target={monthTarget} />
-      </div>
-
-      {loading && (
-        <p className="text-sm text-gray-500">{pretty(t("loading") || "loading")}…</p>
-      )}
-    </section>
-  );
-}
-
-function TotalCard({ label, value, target }: { label: string; value: number; target: number }) {
-  const percent = pct(target > 0 ? (value / target) * 100 : 0);
-  return (
-    <div className="border rounded-lg p-3 bg-white dark:bg-gray-900">
-      <div className="text-sm text-gray-600">{label}</div>
-      <div className="text-2xl font-semibold">{Math.round(value)} kcal</div>
-      <div className="mt-2">
-        <div className="w-full h-2 rounded bg-gray-200 overflow-hidden">
-          <div className="h-2 bg-blue-600" style={{ width: `${percent}%` }} />
-        </div>
-        <div className="mt-1 text-xs text-gray-500">
-          {Math.round(percent)}% of {Math.round(target)} kcal
-        </div>
-      </div>
+    <div className="grid gap-4 sm:grid-cols-3">
+      {cards.map((c) => {
+        const goal = n(c.goal);
+        const pct = goal > 0 ? Math.min(100, Math.round((n(c.value) / goal) * 100)) : 0;
+        return (
+          <div key={c.label} className="rounded-lg border p-4">
+            <div className="text-sm text-gray-600 mb-1">{c.label}</div>
+            <div className="text-2xl font-semibold">{n(c.value)} kcal</div>
+            <div className="mt-2 h-2 w-full rounded bg-gray-200 overflow-hidden">
+              <div
+                className="h-2 bg-blue-600"
+                style={{ width: `${pct}%` }}
+                aria-hidden
+              />
+            </div>
+            <div className="mt-1 text-xs text-gray-600">
+              {goal > 0 ? `${pct}% of ${goal} kcal` : pretty(t("no_target_set") || "no_target_set")}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
