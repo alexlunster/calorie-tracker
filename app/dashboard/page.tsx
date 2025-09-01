@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import AuthGate from "@/components/AuthGate";
 import TotalsBar from "@/components/TotalsBar";
 import RecentEntries from "@/components/RecentEntries";
@@ -10,9 +11,8 @@ import { pretty } from "@/lib/ui";
 import { supabase } from "@/lib/supabaseClient";
 
 /**
- * Tries to dynamically load whatever "targets editor" you already have,
- * without breaking the build if the file name is different.
- * If nothing is found, we render an inline fallback editor below.
+ * Tries to dynamically load whatever "targets editor" you already have.
+ * If nothing is found, we render the inline fallback editor below.
  */
 function TargetsSlot() {
   const [Comp, setComp] = useState<React.ComponentType<any> | null>(null);
@@ -21,7 +21,6 @@ function TargetsSlot() {
     let mounted = true;
 
     (async () => {
-      // Add any other filenames you use here
       const candidates: Array<{
         path: string;
         pick: (m: any) => React.ComponentType<any> | null | undefined;
@@ -42,7 +41,7 @@ function TargetsSlot() {
             return;
           }
         } catch {
-          // keep trying next candidate
+          // keep trying
         }
       }
       if (mounted) setComp(null);
@@ -58,11 +57,14 @@ function TargetsSlot() {
 }
 
 /**
- * Inline fallback targets editor – only shown if TargetsSlot didn’t find your component.
- * It reads/writes the "goals" row for the current user.
+ * Inline fallback targets editor – appears only if TargetsSlot found nothing.
+ * On save it calls router.refresh() so Totals re-reads the latest targets,
+ * and emits a "goals-updated" event for any listeners.
  */
 function InlineTargetsEditor() {
   const { t } = useI18n();
+  const router = useRouter();
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,12 +93,12 @@ function InlineTargetsEditor() {
           .maybeSingle();
 
         if (gErr) throw gErr;
+
         if (data) {
           setDaily(data.daily_target ?? "");
           setWeekly(data.weekly_target ?? "");
           setMonthly(data.monthly_target ?? "");
         } else {
-          // create a blank row so the editor has something to update
           await supabase.from("goals").upsert(
             { user_id: user.id, daily_target: null, weekly_target: null, monthly_target: null },
             { onConflict: "user_id" }
@@ -136,6 +138,14 @@ function InlineTargetsEditor() {
         .eq("user_id", user.id);
 
       if (upErr) throw upErr;
+
+      // ✅ Force TotalsBar (and any server components) to re-read fresh data
+      router.refresh();
+
+      // ✅ Also emit a client-side signal in case any component listens
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("goals-updated"));
+      }
     } catch (e: any) {
       setError(e?.message ?? "save_failed");
     } finally {
@@ -253,7 +263,7 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* Prefer your existing Targets component; if none found, show a safe inline editor */}
+        {/* Prefer your existing Targets component; if none found, show fallback editor */}
         <TargetsSlot />
         <InlineTargetsEditor />
 
