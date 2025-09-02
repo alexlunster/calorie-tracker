@@ -1,132 +1,203 @@
-'use client';
-import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabaseClient';
-import { startOfDay, startOfWeek, startOfMonth } from '@/lib/aggregate';
-import { useI18n } from '@/components/I18nProvider';
+"use client";
 
-type Entry = { id: string; total_calories: number; created_at: string; items: any; image_url: string; };
-type Goals = { daily_target: number; weekly_target: number; monthly_target: number; };
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import AuthGate from "@/components/AuthGate";
+import TotalsBar from "@/components/TotalsBar";
+import RecentEntries from "@/components/RecentEntries";
+import { supabase } from "@/lib/supabaseClient";
+import { useI18n } from "@/components/I18nProvider";
+import { pretty } from "@/lib/ui";
 
-export default function Dashboard() {
+export default function DashboardPage() {
   const { t } = useI18n();
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [goals, setGoals] = useState<Goals>({ daily_target: 2000, weekly_target: 14000, monthly_target: 60000 });
+  const title = useMemo(() => pretty(t("dashboard") || "dashboard"), [t]);
+
+  return (
+    <AuthGate>
+      <div className="grid gap-6">
+        <h1 className="text-xl font-semibold">{title}</h1>
+
+        {/* Totals */}
+        <TotalsBar />
+
+        {/* Back to upload */}
+        <div className="flex justify-center">
+          <Link
+            href="/"
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white shadow hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M15 18l-6-6 6-6"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            {pretty(t("back_to_upload") || "back_to_upload")}
+          </Link>
+        </div>
+
+        {/* Targets editor – daily only; weekly/monthly derived */}
+        <DailyTargetEditor />
+
+        {/* Recent entries */}
+        <RecentEntries />
+      </div>
+    </AuthGate>
+  );
+}
+
+function DailyTargetEditor() {
+  const { t } = useI18n();
+  const router = useRouter();
+
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    const { data: e } = await supabase.from('entries').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(100);
-    setEntries(e || []);
-    const { data: g } = await supabase.from('goals').select('*').eq('user_id', user.id).single();
-    if (g) setGoals(g as Goals);
-    setLoading(false);
-  }
-  useEffect(() => { load(); }, []);
+  const [daily, setDaily] = useState<number | "">("");
 
-  const today = startOfDay();
-  const week = startOfWeek();
-  const month = startOfMonth();
+  // derived
+  const weekly = typeof daily === "number" ? daily * 7 : 0;
+  const monthly = typeof daily === "number" ? daily * 30 : 0;
 
-  const sum = (from: Date) => entries.filter(x => new Date(x.created_at) >= from).reduce((a, b) => a + (b.total_calories||0), 0);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const { data: u, error: uErr } = await supabase.auth.getUser();
+        if (uErr) throw uErr;
+        if (!u.user) throw new Error("not_authenticated");
 
-  function labelFromItems(items: any): string {
-    if (items && typeof items === 'object' && items.meal_name) return String(items.meal_name);
-    if (Array.isArray(items) && items.length) return String(items[0]?.name || '');
-    return '';
-  }
+        const { data: g, error: gErr } = await supabase
+          .from("goals")
+          .select("daily_target")
+          .eq("user_id", u.user.id)
+          .maybeSingle();
+        if (gErr) throw gErr;
 
-  async function saveGoals() {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    await supabase.from('goals').upsert({ user_id: user.id, ...goals });
-    alert(t('save'));
-  }
+        if (alive) setDaily(g?.daily_target ?? "");
+      } catch (e: any) {
+        if (alive) setError(e?.message ?? "load_failed");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
-  async function deleteEntry(id: string) {
-    if (!confirm(`${t('delete')}?`)) return;
-    const { error } = await supabase.from('entries').delete().eq('id', id);
-    if (error) { alert('Delete failed: ' + error.message); return; }
-    setEntries(prev => prev.filter(e => e.id !== id));
+  async function save() {
+    if (daily === "") return;
+    setSaving(true);
+    setError(null);
+    try {
+      const {
+        data: { user },
+        error: uErr,
+      } = await supabase.auth.getUser();
+      if (uErr) throw uErr;
+      if (!user) throw new Error("not_authenticated");
+
+      const payload = {
+        user_id: user.id,
+        daily_target: daily,
+        weekly_target: weekly,
+        monthly_target: monthly,
+      };
+
+      // Upsert so the row exists; conflict target is user_id
+      const { error: upErr } = await supabase
+        .from("goals")
+        .upsert(payload, { onConflict: "user_id" });
+      if (upErr) throw upErr;
+
+      // tell the app + server components to update
+      router.refresh();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("goals-updated"));
+      }
+    } catch (e: any) {
+      setError(e?.message ?? "save_failed");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
-    <div className="grid gap-4">
-      <div className="card">
-        <h2 className="text-xl font-semibold mb-2">{t('totals')}</h2>
-        <div className="grid grid-cols-3 gap-4">
-          <Stat label={t('today')} value={sum(today)} target={goals.daily_target} />
-          <Stat label={t('this_week')} value={sum(week)} target={goals.weekly_target} />
-          <Stat label={t('this_month')} value={sum(month)} target={goals.monthly_target} />
-        </div>
-      </div>
+    <div className="rounded-lg border p-4">
+      <h2 className="mb-3 text-base font-semibold">
+        {pretty(t("targets") || "targets")}
+      </h2>
 
-      <div className="card">
-        <h2 className="text-xl font-semibold mb-2">{t('goals')}</h2>
-        <div className="grid grid-cols-3 gap-4">
-          <GoalInput label={t('daily_target')} value={goals.daily_target} onChange={v=>setGoals({...goals, daily_target: v})} />
-          <GoalInput label={t('weekly_target')} value={goals.weekly_target} onChange={v=>setGoals({...goals, weekly_target: v})} />
-          <GoalInput label={t('monthly_target')} value={goals.monthly_target} onChange={v=>setGoals({...goals, monthly_target: v})} />
-        </div>
-        <button className="btn btn-primary mt-3" onClick={saveGoals}>{t('save')}</button>
-      </div>
+      {loading ? (
+        <div className="text-sm text-gray-500">{pretty(t("loading") || "loading")}…</div>
+      ) : (
+        <>
+          {error && (
+            <div className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">
+              {pretty(error)}
+            </div>
+          )}
 
-      <div className="card">
-        <h2 className="text-xl font-semibold mb-2">{t('recent_entries')}</h2>
-        <ul className="space-y-2">
-          {entries.map(e => {
-            const meal = labelFromItems(e.items);
-            return (
-              <li key={e.id} className="flex items-start gap-3">
-               <img
-  src={e.image_url}
-  alt="meal"
-  className="w-20 h-20 object-cover rounded-lg border"
-  onError={(ev) => { (ev.currentTarget as HTMLImageElement).src = '/placeholder.png'; }}
-/>
-                <div className="flex-1">
-                  <div className="font-medium">
-                    {new Date(e.created_at).toLocaleString()}
-                    {meal && <span className="text-gray-600"> — {meal}</span>}
-                  </div>
-                  <div className="text-sm text-gray-600">{e.total_calories} kcal</div>
-                  {Array.isArray(e.items) && (
-                    <div className="text-xs text-gray-500">{e.items.map((i:any)=>i.name).join(', ')}</div>
-                  )}
-                </div>
-                <button className="btn" onClick={() => deleteEntry(e.id)}>{t('delete')}</button>
-              </li>
-            );
-          })}
-          {entries.length === 0 && !loading && <div className="text-sm text-gray-500">No entries yet.</div>}
-        </ul>
-      </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {/* Daily (editable) */}
+            <label className="flex items-center gap-2">
+              <span className="w-24 text-sm text-gray-600">{pretty(t("daily") || "daily")}</span>
+              <input
+                type="number"
+                min={0}
+                value={daily}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setDaily(v === "" ? "" : Number(v));
+                }}
+                className="w-full rounded border px-3 py-2"
+                placeholder="kcal"
+              />
+            </label>
+
+            {/* Weekly (derived) */}
+            <label className="flex items-center gap-2">
+              <span className="w-24 text-sm text-gray-600">{pretty(t("weekly") || "weekly")}</span>
+              <input
+                type="number"
+                value={weekly}
+                readOnly
+                className="w-full rounded border bg-gray-50 px-3 py-2 text-gray-700"
+              />
+            </label>
+
+            {/* Monthly (derived) */}
+            <label className="flex items-center gap-2">
+              <span className="w-24 text-sm text-gray-600">{pretty(t("monthly") || "monthly")}</span>
+              <input
+                type="number"
+                value={monthly}
+                readOnly
+                className="w-full rounded border bg-gray-50 px-3 py-2 text-gray-700"
+              />
+            </label>
+          </div>
+
+          <div className="mt-4">
+            <button
+              onClick={save}
+              disabled={saving || daily === ""}
+              className="rounded bg-gray-900 px-4 py-2 text-white disabled:opacity-60"
+            >
+              {saving ? pretty(t("saving") || "saving") + "…" : pretty(t("save") || "save")}
+            </button>
+          </div>
+        </>
+      )}
     </div>
-  );
-}
-
-function Stat({ label, value, target }: { label: string, value: number, target: number }) {
-  const { t } = useI18n();  // add at top of file: import { useI18n } from '@/components/I18nProvider';
-  const pct = target ? Math.min(100, Math.round((value / target) * 100)) : 0;
-  return (
-    <div>
-      <div className="text-sm text-gray-600">{label}</div>
-      <div className="text-2xl font-bold">{value} {t('kcal')}</div>
-      <div className="text-xs text-gray-500">{pct}% {t('of')} {target} {t('kcal')}</div>
-      <div className="w-full h-2 bg-gray-200 rounded-full mt-1">
-        <div className="h-2 bg-black rounded-full" style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  );
-}
-
-
-function GoalInput({ label, value, onChange }: { label: string, value: number, onChange: (v:number)=>void }) {
-  return (
-    <label className="block">
-      <div className="label">{label}</div>
-      <input className="input" type="number" value={value} onChange={e=>onChange(parseInt(e.target.value || '0', 10))} />
-    </label>
   );
 }
