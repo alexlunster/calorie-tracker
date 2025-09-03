@@ -1,160 +1,141 @@
+import { NextResponse } from "next/server";
 import OpenAI from "openai";
+import { createClient } from "@supabase/supabase-js";
 
-export const runtime = "nodejs"; // avoid Edge memory/timeouts
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
-
+// ---- Types ----
+type Item = { name: string; calories: number };
 type Out = {
-  meal_name: string | null;
-  items: { name: string; calories: number }[];
-  total_calories: number | null;
+  meal_name: string;
+  items: Item[];
+  total_calories: number;
 };
 
+// ---- Helpers ----
+function coerceNumber(v: unknown): number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number(v.trim());
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
+}
+
+function safeString(v: unknown, fallback = ""): string {
+  return typeof v === "string" && v.trim().length ? v.trim() : fallback;
+}
+
+function toItems(arr: unknown): Item[] {
+  if (!Array.isArray(arr)) return [];
+  return arr.map((raw: any): Item => {
+    const name = safeString(raw?.name, "item");
+    const calories = coerceNumber(raw?.calories);
+    return { name, calories };
+  });
+}
+
+function toOut(parsed: any): Out {
+  const meal_name = safeString(parsed?.meal_name, "");
+  const items = toItems(parsed?.items);
+  const fromModel = coerceNumber(parsed?.total_calories);
+  const fromItems = items.reduce((s, it) => s + coerceNumber(it.calories), 0);
+  const total_calories = fromModel || fromItems || 0;
+  return { meal_name, items, total_calories };
+}
+
+// ---- OpenAI client ----
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
+
+// ---- Supabase (service role not required; anon key fine for server) ----
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+// ---- Route ----
 export async function POST(req: Request) {
   try {
-    const { imageUrl } = (await req.json()) as { imageUrl?: string };
-    if (!imageUrl) {
-      return Response.json({ error: "missing imageUrl" }, { status: 400 });
+    const { imageUrl, entryId } = await req.json();
+
+    if (!imageUrl || !entryId) {
+      return NextResponse.json(
+        { error: "Missing imageUrl or entryId" },
+        { status: 400 }
+      );
     }
 
-    // 1) Download with retries (bypass any HTML viewer with ?download)
-    const dlUrl = addCacheBuster(addDownload(imageUrl));
-    const imgBytes = await getBytesWithRetry(dlUrl, 5, 800);
-    const b64 = Buffer.from(imgBytes).toString("base64");
-    const dataUrl = `data:image/jpeg;base64,${b64}`;
+    // Ask the model for strictly-typed JSON
+    const sysPrompt = `
+You are a nutrition assistant. Given a single food photo, return JSON with:
+{
+  "meal_name": string,        // short human label e.g. "banana", "chicken salad"
+  "items": [                  // each recognized item with estimated calories
+    { "name": string, "calories": number }
+  ],
+  "total_calories": number    // total kcal for the whole photo
+}
+If unsure, make your best reasonable estimate. Numbers must be plain numbers, not strings.
+`;
 
-    // 2) Ask GPT-4o Mini Vision with strict JSON
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0,
       response_format: { type: "json_object" },
       messages: [
-        {
-          role: "system",
-          content:
-            "You are a nutrition assistant. From the food photo, infer a short meal name and a list of items with estimated calories. Return ONLY JSON with this shape: {\"meal_name\": string, \"items\":[{\"name\":string,\"calories\":number}], \"total_calories\": number}. Numbers should be in kcal.",
-        },
+        { role: "system", content: sysPrompt },
         {
           role: "user",
           content: [
-            {
-              type: "text",
-              text:
-                "Identify the food(s) and estimate calories. Be concise but accurate. Fill the JSON fields. If unsure, still return your best numeric estimate.",
-            },
-            {
-              type: "image_url",
-              image_url: { url: dataUrl, detail: "low" },
-            },
-          ],
+            { type: "input_text", text: "Analyze this photo and return the JSON." },
+            { type: "input_image", image_url: imageUrl },
+          ] as any, // OpenAI SDK types differ between versions; keep as any for safety
         },
       ],
     });
 
-    const raw = completion.choices[0]?.message?.content || "{}";
-    let parsed: Partial<Out>;
+    const raw =
+      completion.choices?.[0]?.message?.content?.trim() ||
+      '{"meal_name":"","items":[],"total_calories":0}';
+
+    let parsed: any = {};
     try {
       parsed = JSON.parse(raw);
     } catch {
-      parsed = {};
+      // If the model somehow didn't return perfect JSON, fall back to zeros
+      parsed = { meal_name: "", items: [], total_calories: 0 };
     }
 
-    const out: Out = {
-      meal_name: safeString(parsed.meal_name),
-      items: Array.isArray(parsed.items)
-        ? parsed.items
-            .map((it: any) => ({
-              name: safeString(it?.name) ?? "item",
-              calories: toNumber(it?.calories),
-            }))
-            .filter((it) => isFinite(it.calories))
-        : [],
-      total_calories: toNumber(parsed.total_calories),
-    };
+    const out = toOut(parsed); // <- ensures correct, non-null numbers
 
-    // If model forgot total_calories, derive from items
-    if (!isFiniteNum(out.total_calories) && out.items.length) {
-      out.total_calories = Math.round(
-        out.items.reduce((s, it) => s + (isFiniteNum(it.calories) ? it.calories : 0), 0)
+    // Update the entry row with results
+    const { error: upErr } = await supabase
+      .from("entries")
+      .update({
+        meal_name: out.meal_name,
+        items: out.items, // jsonb
+        total_calories: out.total_calories,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", entryId)
+      .select("id")
+      .single();
+
+    if (upErr) {
+      return NextResponse.json(
+        { error: "Failed to update entry", details: upErr.message },
+        { status: 400 }
       );
     }
-    if (!isFiniteNum(out.total_calories)) out.total_calories = 0;
 
-    // Minimal meal_name fallback
-    if (!out.meal_name || out.meal_name.trim() === "") {
-      out.meal_name = out.items.length ? out.items[0].name : "meal";
-    }
-
-    return Response.json(out);
-  } catch (err: any) {
-    const msg = String(err?.message || err);
-    return new Response(JSON.stringify({ error: msg }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return NextResponse.json({ ok: true, result: out });
+  } catch (e: any) {
+    return NextResponse.json(
+      {
+        error: "Analyze failed",
+        details: e?.message || String(e),
+      },
+      { status: 500 }
+    );
   }
-}
-
-// ---- helpers ----
-
-function addDownload(url: string) {
-  try {
-    const u = new URL(url);
-    if (!u.searchParams.has("download")) u.searchParams.set("download", "");
-    return u.toString();
-  } catch {
-    return url;
-  }
-}
-function addCacheBuster(url: string) {
-  try {
-    const u = new URL(url);
-    u.searchParams.set("_", Date.now().toString());
-    return u.toString();
-  } catch {
-    return url;
-  }
-}
-
-async function getBytesWithRetry(
-  url: string,
-  tries = 5,
-  baseDelayMs = 800
-): Promise<ArrayBuffer> {
-  let lastErr: any;
-  for (let i = 0; i < tries; i++) {
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 20_000); // 20s per try
-      const res = await fetch(url, {
-        method: "GET",
-        headers: { Accept: "image/*" },
-        cache: "no-store",
-        signal: ctrl.signal,
-      });
-      clearTimeout(t);
-      if (!res.ok) throw new Error(`fetch ${res.status}`);
-      return await res.arrayBuffer();
-    } catch (e) {
-      lastErr = e;
-      await sleep(baseDelayMs * Math.pow(1.6, i));
-    }
-  }
-  throw lastErr || new Error("download failed");
-}
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-function safeString(v: any): string | null {
-  if (typeof v === "string") return v;
-  return null;
-}
-function toNumber(v: any): number | null {
-  if (v == null) return null;
-  const n = Number(v);
-  return isFinite(n) ? n : null;
-}
-function isFiniteNum(n: any): n is number {
-  return typeof n === "number" && isFinite(n);
 }
