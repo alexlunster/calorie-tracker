@@ -1,4 +1,17 @@
 import { NextResponse } from "next/server";
+import { supabase } from "@/lib/supabaseClient";
+
+export async function POST(req: Request) {
+  try {
+    const { entryId, imageUrl } = await req.json();
+
+    if (!entryId || !imageUrl) {
+      return NextResponse.json(
+        { error: "Missing imageUrl or entryId" },
+        { status: 400 }
+      );
+    }
+
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
