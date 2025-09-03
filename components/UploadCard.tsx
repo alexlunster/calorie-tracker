@@ -1,194 +1,98 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { useI18n } from "@/components/I18nProvider";
-import { pretty } from "@/lib/ui";
-
-type ModelItem = { name: string; calories: number | string };
-type AnalyzeResponse = {
-  meal_name?: string;
-  items?: ModelItem[];
-  total_calories?: number | string;
-};
-
-function toNum(v: unknown): number {
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
 
 export default function UploadCard() {
-  const { t } = useI18n();
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  // toast
-  const [showToast, setShowToast] = useState(false);
-  const [toastMsg, setToastMsg] = useState("");
-
-  useEffect(() => {
-    if (!showToast) return;
-    const id = setTimeout(() => setShowToast(false), 3000);
-    return () => clearTimeout(id);
-  }, [showToast]);
-
-  const pickFromGallery = () => {
-    inputRef.current?.removeAttribute("capture");
-    inputRef.current?.click();
-  };
-  const takePhoto = () => {
-    inputRef.current?.setAttribute("capture", "environment");
-    inputRef.current?.click();
-  };
-
-  async function handleFiles(files: FileList | null) {
-    if (!files || files.length === 0) return;
-
-    setBusy(true);
-    setErr(null);
+  async function handleFile(file: File) {
     try {
-      const { data: auth } = await supabase.auth.getUser();
-      if (!auth.user) throw new Error(pretty(t("please_sign_in_first") || "please_sign_in_first"));
-      const userId = auth.user.id;
+      setError(null);
+      setLoading(true);
 
-      // 1) upload
-      const file = files[0];
-      const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      const key = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-
-      const { error: upErr } = await supabase.storage
+      // 1. Upload to Supabase Storage
+      const fileName = `${Date.now()}-${file.name}`;
+      const { data: storage, error: storageErr } = await supabase.storage
         .from("photos")
-        .upload(key, file, { cacheControl: "3600", upsert: false });
-      if (upErr) throw upErr;
+        .upload(fileName, file);
 
-      const { data: pub } = supabase.storage.from("photos").getPublicUrl(key);
-      const imageUrl = pub.publicUrl;
+      if (storageErr) throw storageErr;
 
-      // 2) analyze
+      const {
+        data: { publicUrl },
+      } = supabase.storage.from("photos").getPublicUrl(fileName);
+
+      // 2. Insert row into entries
+      const { data: entry, error: entryErr } = await supabase
+        .from("entries")
+        .insert([{ image_url: publicUrl }])
+        .select()
+        .single();
+
+      if (entryErr) throw entryErr;
+
+      // 3. Call analyze API with entryId + imageUrl
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageUrl }),
+        body: JSON.stringify({
+          entryId: entry.id,
+          imageUrl: publicUrl,
+        }),
       });
-      if (!res.ok) throw new Error(`Analyze failed: ${await res.text()}`);
-      const parsed: AnalyzeResponse = await res.json();
 
-      const mealName = (parsed.meal_name || "meal").toString();
-      const itemsArray = Array.isArray(parsed.items) ? parsed.items : [];
-      const normalizedItems = itemsArray.map((it) => ({
-        name: (it?.name ?? "item") as string,
-        calories: toNum(it?.calories),
-      }));
-      const total =
-        toNum(parsed.total_calories) ||
-        normalizedItems.reduce((s, it) => s + toNum(it.calories), 0);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Analyze failed");
 
-      // Build a robust items JSON that older & newer UIs can read
-      const uniqueNames = Array.from(
-        new Set([mealName, ...normalizedItems.map((i) => i.name)].filter(Boolean))
-      ).slice(0, 5);
-
-      // 3) insert
-      const { error: insErr } = await supabase.from("entries").insert({
-        user_id: userId,
-        image_url: imageUrl,
-        items: {
-          name: mealName,           // preferred field
-          items: normalizedItems,   // structured items
-          labels: uniqueNames,      // fallback for older renders
-        },
-        calories: total,
-        total_calories: total,
-      });
-      if (insErr) throw insErr;
-
-      // 4) light cleanup (keep only 3 latest images per user)
-      try {
-        const { data: list } = await supabase
-          .from("entries")
-          .select("image_url, created_at")
-          .eq("user_id", userId)
-          .order("created_at", { ascending: false });
-
-        if (list && list.length > 3) {
-          const extras = list.slice(3);
-          const keys = extras
-            .map((e: any) => (typeof e.image_url === "string" ? e.image_url.split("/photos/")[1] : null))
-            .filter(Boolean) as string[];
-          if (keys.length) await supabase.storage.from("photos").remove(keys);
-        }
-      } catch {
-        /* ignore */
-      }
-
-      // 5) broadcast + toast
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("entry:created", { detail: { userId } }));
-      }
-      setToastMsg(`Saved ${Math.round(total)} kcal for "${mealName}"`);
-      setShowToast(true);
-    } catch (e: any) {
-      setErr(e?.message || "Upload failed");
+      alert("✅ Food analyzed and calories saved!");
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || "Upload failed");
     } finally {
-      setBusy(false);
-      if (inputRef.current) {
-        inputRef.current.value = "";
-        inputRef.current.removeAttribute("capture");
-      }
+      setLoading(false);
     }
   }
 
   return (
-    <section className="relative border rounded-xl p-4 shadow-sm bg-white dark:bg-gray-900">
-      <h3 className="font-semibold mb-3">
-        {pretty(t("upload_photo") || "Upload Photo")}
-      </h3>
-
+    <div className="border rounded p-4 shadow bg-white">
+      <h2 className="text-lg font-bold mb-2">Upload Photo</h2>
+      <input
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={(e) => {
+          if (e.target.files?.[0]) handleFile(e.target.files[0]);
+        }}
+        className="hidden"
+        id="cameraInput"
+      />
       <div className="flex gap-2">
-        <button
-          onClick={takePhoto}
-          className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-60"
-          disabled={busy}
+        <label
+          htmlFor="cameraInput"
+          className="bg-blue-600 text-white px-4 py-2 rounded cursor-pointer"
         >
-          {pretty(t("take_photo") || "take photo")}
-        </button>
-
-        <button
-          onClick={pickFromGallery}
-          className="px-3 py-2 rounded bg-gray-800 text-white disabled:opacity-60"
-          disabled={busy}
-        >
-          {pretty(t("choose_from_gallery") || "choose from gallery")}
-        </button>
-
+          Take Photo
+        </label>
         <input
-          ref={inputRef}
           type="file"
           accept="image/*"
+          onChange={(e) => {
+            if (e.target.files?.[0]) handleFile(e.target.files[0]);
+          }}
           className="hidden"
-          onChange={(e) => handleFiles(e.target.files)}
+          id="galleryInput"
         />
+        <label
+          htmlFor="galleryInput"
+          className="bg-gray-800 text-white px-4 py-2 rounded cursor-pointer"
+        >
+          Choose from Gallery
+        </label>
       </div>
-
-      {busy && <p className="text-sm text-gray-500 mt-2">{pretty(t("analyzing") || "analyzing")}…</p>}
-      {err && <p className="text-sm text-red-600 mt-2">{pretty(err)}</p>}
-
-      {showToast && (
-        <div className="fixed left-1/2 -translate-x-1/2 bottom-4 z-50 rounded-lg bg-green-600 text-white px-4 py-2 shadow-lg">
-          <div className="flex items-center gap-3">
-            <span>✅</span>
-            <span className="text-sm">{toastMsg}</span>
-            <button
-              className="ml-2 text-white/90 hover:text-white"
-              onClick={() => setShowToast(false)}
-              aria-label="Close"
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      )}
-    </section>
+      {loading && <p className="mt-2 text-sm text-gray-500">Uploading…</p>}
+      {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+    </div>
   );
 }
