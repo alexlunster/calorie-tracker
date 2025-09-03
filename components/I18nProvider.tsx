@@ -11,14 +11,13 @@ type Bundle = Record<Lang, Dict>;
 export type I18nContextType = {
   lang: Lang;
   t: (key: keyof Dict | string, params?: Record<string, string | number>) => string;
-  setLang: (lang: Lang) => void;        // UI-only change + cookie
-  saveLang: (lang: Lang) => Promise<void>; // persists to DB + cookie + UI
+  setLang: (lang: Lang) => void;         // UI-only + cookie
+  saveLang: (lang: Lang) => Promise<void>; // persist to DB + cookie + UI
 };
 
 // ---- Translations (inline) ----
 const translations: Bundle = {
   en: {
-    // common / auth
     loading: "loading",
     welcome: "welcome",
     your_email: "your_email",
@@ -29,14 +28,12 @@ const translations: Bundle = {
     please_enter_email: "please_enter_email",
     check_email_login: "check_your_email_for_a_login_link",
 
-    // home / totals
     totals: "Totals",
     today: "today",
     this_week: "this_week",
     this_month: "this_month",
     of_kcal: "of {n} kcal",
 
-    // upload
     upload_photo: "Upload Photo",
     take_photo: "Take Photo",
     choose_from_gallery: "Choose from Gallery",
@@ -52,7 +49,6 @@ const translations: Bundle = {
     go_to_dashboard: "Go to dashboard",
     back_to_upload: "back to upload",
 
-    // dashboard / goals
     dashboard: "dashboard",
     targets: "targets",
     daily: "daily",
@@ -60,12 +56,10 @@ const translations: Bundle = {
     monthly: "monthly",
     save: "save",
 
-    // entries
     recent_entries: "Recent Entries",
     delete: "delete",
     kcal: "kcal",
 
-    // language
     language: "Language",
     english: "English",
     german: "German",
@@ -172,7 +166,7 @@ const translations: Bundle = {
   },
 };
 
-// ---- Small helpers ----
+// ---- Small helpers (no replaceAll) ----
 function getCookie(name: string): string | undefined {
   if (typeof document === "undefined") return undefined;
   const m = document.cookie.match(
@@ -190,10 +184,15 @@ function setCookie(name: string, value: string, days = 365) {
   )}; expires=${exp.toUTCString()}; path=/; SameSite=Lax`;
 }
 
+function replaceAllSafe(s: string, needle: string, replacement: string) {
+  // Works in older runtimes without String.prototype.replaceAll
+  return s.split(needle).join(replacement);
+}
+
 function format(template: string, params?: Record<string, string | number>) {
   if (!params) return template;
   return Object.entries(params).reduce(
-    (s, [k, v]) => s.replaceAll(`{${k}}`, String(v)),
+    (acc, [k, v]) => replaceAllSafe(acc, `{${k}}`, String(v)),
     template
   );
 }
@@ -245,7 +244,7 @@ export default function I18nProvider({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Build translator for current lang
+  // Translator for current lang
   const t = useMemo(() => {
     const dict = translations[lang] || translations.en;
     return (key: string, params?: Record<string, string | number>) => {
