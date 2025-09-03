@@ -1,17 +1,24 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import Cookies from "js-cookie";
 import { supabase } from "@/lib/supabaseClient";
 
-type Lang = "en" | "ru" | "de";
-
+// ---- Types ----
+export type Lang = "en" | "ru" | "de";
 type Dict = Record<string, string>;
 type Bundle = Record<Lang, Dict>;
 
+export type I18nContextType = {
+  lang: Lang;
+  t: (key: keyof Dict | string, params?: Record<string, string | number>) => string;
+  setLang: (lang: Lang) => void;        // UI-only change + cookie
+  saveLang: (lang: Lang) => Promise<void>; // persists to DB + cookie + UI
+};
+
+// ---- Translations (inline) ----
 const translations: Bundle = {
   en: {
-    // common
+    // common / auth
     loading: "loading",
     welcome: "welcome",
     your_email: "your_email",
@@ -22,12 +29,14 @@ const translations: Bundle = {
     please_enter_email: "please_enter_email",
     check_email_login: "check_your_email_for_a_login_link",
 
-    // home / totals / upload
+    // home / totals
     totals: "Totals",
     today: "today",
     this_week: "this_week",
     this_month: "this_month",
     of_kcal: "of {n} kcal",
+
+    // upload
     upload_photo: "Upload Photo",
     take_photo: "Take Photo",
     choose_from_gallery: "Choose from Gallery",
@@ -36,9 +45,12 @@ const translations: Bundle = {
     upload_success: "Upload successful!",
     analyze_failed: "Analysis failed",
     image_too_large: "Image is too large after compression. Try a smaller photo.",
-    low_memory_hint: "Your device ran out of memory processing the photo. Close other apps or try a smaller photo.",
-    analyze_timeout_hint: "The photo was uploaded but analysis timed out. Please try again.",
+    low_memory_hint:
+      "Your device ran out of memory processing the photo. Close other apps or try a smaller photo.",
+    analyze_timeout_hint:
+      "The photo was uploaded but analysis timed out. Please try again.",
     go_to_dashboard: "Go to dashboard",
+    back_to_upload: "back to upload",
 
     // dashboard / goals
     dashboard: "dashboard",
@@ -47,12 +59,17 @@ const translations: Bundle = {
     weekly: "weekly",
     monthly: "monthly",
     save: "save",
-    back_to_upload: "back to upload",
 
     // entries
     recent_entries: "Recent Entries",
     delete: "delete",
     kcal: "kcal",
+
+    // language
+    language: "Language",
+    english: "English",
+    german: "German",
+    russian: "Russian",
   },
 
   ru: {
@@ -71,6 +88,7 @@ const translations: Bundle = {
     this_week: "эта неделя",
     this_month: "этот месяц",
     of_kcal: "из {n} ккал",
+
     upload_photo: "Загрузить фото",
     take_photo: "Сделать фото",
     choose_from_gallery: "Выбрать из галереи",
@@ -79,9 +97,12 @@ const translations: Bundle = {
     upload_success: "Загрузка завершена!",
     analyze_failed: "Ошибка анализа",
     image_too_large: "Изображение слишком большое. Попробуйте меньшего размера.",
-    low_memory_hint: "На устройстве не хватает памяти. Закройте другие приложения или используйте фото меньшего размера.",
-    analyze_timeout_hint: "Фото загружено, но анализ истёк по времени. Повторите попытку.",
+    low_memory_hint:
+      "На устройстве не хватает памяти. Закройте другие приложения или используйте фото меньшего размера.",
+    analyze_timeout_hint:
+      "Фото загружено, но анализ истёк по времени. Повторите попытку.",
     go_to_dashboard: "Перейти на дашборд",
+    back_to_upload: "назад к загрузке",
 
     dashboard: "дашборд",
     targets: "цели",
@@ -89,11 +110,15 @@ const translations: Bundle = {
     weekly: "неделя",
     monthly: "месяц",
     save: "сохранить",
-    back_to_upload: "назад к загрузке",
 
     recent_entries: "Последние записи",
     delete: "удалить",
     kcal: "ккал",
+
+    language: "Язык",
+    english: "Английский",
+    german: "Немецкий",
+    russian: "Русский",
   },
 
   de: {
@@ -112,6 +137,7 @@ const translations: Bundle = {
     this_week: "diese Woche",
     this_month: "dieser Monat",
     of_kcal: "von {n} kcal",
+
     upload_photo: "Foto hochladen",
     take_photo: "Foto aufnehmen",
     choose_from_gallery: "Aus Galerie wählen",
@@ -119,10 +145,14 @@ const translations: Bundle = {
     processing: "Wird verarbeitet",
     upload_success: "Upload erfolgreich!",
     analyze_failed: "Analyse fehlgeschlagen",
-    image_too_large: "Bild ist nach der Kompression zu groß. Bitte kleineres Foto versuchen.",
-    low_memory_hint: "Zu wenig Speicher auf dem Gerät. Schließe andere Apps oder versuche ein kleineres Foto.",
-    analyze_timeout_hint: "Foto hochgeladen, aber Analyse hat ein Timeout. Bitte erneut versuchen.",
+    image_too_large:
+      "Bild ist nach der Kompression zu groß. Bitte kleineres Foto versuchen.",
+    low_memory_hint:
+      "Zu wenig Speicher auf dem Gerät. Schließe andere Apps oder versuche ein kleineres Foto.",
+    analyze_timeout_hint:
+      "Foto hochgeladen, aber Analyse hat ein Timeout. Bitte erneut versuchen.",
     go_to_dashboard: "Zum Dashboard",
+    back_to_upload: "zurück zum Upload",
 
     dashboard: "dashboard",
     targets: "ziele",
@@ -130,93 +160,123 @@ const translations: Bundle = {
     weekly: "wöchentlich",
     monthly: "monatlich",
     save: "speichern",
-    back_to_upload: "zurück zum Upload",
 
     recent_entries: "Neueste Einträge",
     delete: "löschen",
     kcal: "kcal",
+
+    language: "Sprache",
+    english: "Englisch",
+    german: "Deutsch",
+    russian: "Russisch",
   },
 };
 
-function pretty(str: string | null | undefined) {
-  if (!str) return "";
-  return String(str).replaceAll("_", " ");
+// ---- Small helpers ----
+function getCookie(name: string): string | undefined {
+  if (typeof document === "undefined") return undefined;
+  const m = document.cookie.match(
+    new RegExp("(^|; )" + encodeURIComponent(name) + "=([^;]*)")
+  );
+  return m ? decodeURIComponent(m[2]) : undefined;
 }
 
-function format(t: string, params?: Record<string, string | number>) {
-  if (!params) return t;
+function setCookie(name: string, value: string, days = 365) {
+  if (typeof document === "undefined") return;
+  const exp = new Date();
+  exp.setTime(exp.getTime() + days * 24 * 60 * 60 * 1000);
+  document.cookie = `${encodeURIComponent(name)}=${encodeURIComponent(
+    value
+  )}; expires=${exp.toUTCString()}; path=/; SameSite=Lax`;
+}
+
+function format(template: string, params?: Record<string, string | number>) {
+  if (!params) return template;
   return Object.entries(params).reduce(
     (s, [k, v]) => s.replaceAll(`{${k}}`, String(v)),
-    t
+    template
   );
 }
 
-type I18nContextType = {
-  lang: Lang;
-  t: (key: string, params?: Record<string, string | number>) => string;
-  setLang: (l: Lang) => void;       // UI only
-  saveLang: (l: Lang) => Promise<void>; // persist to DB + cookie + UI
-};
-
+// ---- Context ----
 const I18nContext = createContext<I18nContextType | null>(null);
 
-export default function I18nProvider({ children }: { children: React.ReactNode }) {
-  const [lang, setLangState] = useState<Lang>("en");
+export default function I18nProvider({
+  children,
+  lang: initialLang = "en",
+}: {
+  children: React.ReactNode;
+  lang?: Lang;
+}) {
+  const [lang, setLangState] = useState<Lang>(initialLang);
 
-  // 1) initial: cookie → DB → default
+  // On mount: cookie → DB → initial prop
   useEffect(() => {
     let alive = true;
 
-    const init = async () => {
-      const cookieLang = Cookies.get("lang") as Lang | undefined;
+    async function init() {
+      // 1) cookie
+      const cookieLang = getCookie("lang") as Lang | undefined;
       if (cookieLang && ["en", "ru", "de"].includes(cookieLang)) {
         if (alive) setLangState(cookieLang);
         return;
       }
 
-      const { data: { user } } = await supabase.auth.getUser();
+      // 2) DB (if logged in)
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (user) {
         const { data } = await supabase
           .from("user_prefs")
           .select("lang")
           .eq("user_id", user.id)
           .maybeSingle();
-        const dbLang = (data?.lang as Lang | undefined) || "en";
-        Cookies.set("lang", dbLang, { expires: 365 });
+        const dbLang = (data?.lang as Lang | undefined) || initialLang || "en";
+        setCookie("lang", dbLang, 365);
         if (alive) setLangState(dbLang);
       }
-    };
+    }
 
     init();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Build translator for current lang
+  const t = useMemo(() => {
+    const dict = translations[lang] || translations.en;
+    return (key: string, params?: Record<string, string | number>) => {
+      const base = dict[key] ?? translations.en[key] ?? key;
+      return format(base, params);
+    };
+  }, [lang]);
 
   const setLang = (l: Lang) => {
     setLangState(l);
-    Cookies.set("lang", l, { expires: 365 });
+    setCookie("lang", l, 365);
   };
 
   const saveLang = async (l: Lang) => {
     setLang(l);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    await supabase.from("user_prefs").upsert({
-      user_id: user.id,
-      lang: l,
-      updated_at: new Date().toISOString(),
-    });
+    // persist to DB for logged-in users
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return; // not logged in, cookie is enough
+    await supabase.from("user_prefs").upsert(
+      {
+        user_id: user.id,
+        lang: l,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id" }
+    );
   };
 
-  const value = useMemo<I18nContextType>(() => ({
-    lang,
-    t: (key, params) => {
-      const dict = translations[lang] || translations.en;
-      const raw = dict[key] ?? key; // fall back to key
-      return pretty(format(raw, params));
-    },
-    setLang,
-    saveLang,
-  }), [lang]);
+  const value: I18nContextType = { lang, t, setLang, saveLang };
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
