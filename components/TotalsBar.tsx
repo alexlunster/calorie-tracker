@@ -25,35 +25,85 @@ export default function TotalsBar() {
   };
 
   async function resolveDailyGoal(): Promise<number> {
-    async function trySelect(table: string, columns: string[]) {
-      try {
-        const { data, error } = await supabase.from(table).select(columns.join(",")).limit(1).maybeSingle();
-        if (error || !data) return null;
-        const row = data as Record<string, unknown>;
-        for (const col of columns) {
-          if (row[col] != null) {
-            const v = toNum(row[col]);
-            if (v > 0) return v;
-          }
-        }
-        return null;
-      } catch {
-        return null;
+    // helper: return first positive value
+    const firstPos = (...vals: Array<number | null | undefined>) => {
+      for (const v of vals) {
+        const n = toNum(v);
+        if (n > 0) return n;
       }
-    }
+      return 0;
+    };
 
-    const checks: Array<[string, string[]]> = [
-      ["profiles", ["daily_kcal", "daily_goal", "goal_kcal"]],
-      ["user_prefs", ["daily_kcal", "daily_goal", "goal_kcal"]],
-      ["goals", ["daily", "daily_kcal", "kcal"]],
-      ["targets", ["daily", "daily_kcal", "kcal"]],
-      ["settings", ["daily_kcal", "daily_goal", "goal_kcal"]],
-    ];
+    // 1) profiles
+    try {
+      const { data } = await supabase
+        .from("profiles")
+        .select("daily_kcal, daily_goal, goal_kcal")
+        .limit(1)
+        .maybeSingle();
+      if (data) {
+        const row = data as Partial<{ daily_kcal: number; daily_goal: number; goal_kcal: number }>;
+        const n = firstPos(row.daily_kcal, row.daily_goal, row.goal_kcal);
+        if (n > 0) return n;
+      }
+    } catch {}
 
-    for (const [table, cols] of checks) {
-      const v = await trySelect(table, cols);
-      if (typeof v === "number" && v > 0) return v;
-    }
+    // 2) user_prefs
+    try {
+      const { data } = await supabase
+        .from("user_prefs")
+        .select("daily_kcal, daily_goal, goal_kcal")
+        .limit(1)
+        .maybeSingle();
+      if (data) {
+        const row = data as Partial<{ daily_kcal: number; daily_goal: number; goal_kcal: number }>;
+        const n = firstPos(row.daily_kcal, row.daily_goal, row.goal_kcal);
+        if (n > 0) return n;
+      }
+    } catch {}
+
+    // 3) goals
+    try {
+      const { data } = await supabase
+        .from("goals")
+        .select("daily, daily_kcal, kcal")
+        .limit(1)
+        .maybeSingle();
+      if (data) {
+        const row = data as Partial<{ daily: number; daily_kcal: number; kcal: number }>;
+        const n = firstPos(row.daily, row.daily_kcal, row.kcal);
+        if (n > 0) return n;
+      }
+    } catch {}
+
+    // 4) targets
+    try {
+      const { data } = await supabase
+        .from("targets")
+        .select("daily, daily_kcal, kcal")
+        .limit(1)
+        .maybeSingle();
+      if (data) {
+        const row = data as Partial<{ daily: number; daily_kcal: number; kcal: number }>;
+        const n = firstPos(row.daily, row.daily_kcal, row.kcal);
+        if (n > 0) return n;
+      }
+    } catch {}
+
+    // 5) settings
+    try {
+      const { data } = await supabase
+        .from("settings")
+        .select("daily_kcal, daily_goal, goal_kcal")
+        .limit(1)
+        .maybeSingle();
+      if (data) {
+        const row = data as Partial<{ daily_kcal: number; daily_goal: number; goal_kcal: number }>;
+        const n = firstPos(row.daily_kcal, row.daily_goal, row.goal_kcal);
+        if (n > 0) return n;
+      }
+    } catch {}
+
     return 0;
   }
 
@@ -78,7 +128,7 @@ export default function TotalsBar() {
         .order("created_at", { ascending: false })
         .limit(1000);
       if (error || !data) return 0;
-      return data.reduce((s, r) => s + toNum((r as any).total_calories), 0);
+      return (data as any[]).reduce((s, r) => s + toNum((r as any).total_calories), 0);
     }
 
     const [d, w, m] = await Promise.all([sumSince(dayISO), sumSince(weekISO), sumSince(monthISO)]);
