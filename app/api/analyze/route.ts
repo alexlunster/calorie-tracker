@@ -1,130 +1,89 @@
-import { NextResponse } from "next/server";
+// app/api/analyze/route.ts
 import OpenAI from "openai";
-import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 
-/**
- * Build a server-side Supabase client. If SUPABASE_SERVICE_ROLE_KEY is present,
- * we use it (bypasses RLS, safe on the server). Otherwise we fall back to anon
- * with request cookies so RLS still applies to the logged-in user.
- */
-function makeServerSupabase() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-  const c = cookies();
-
-  // Minimal cookies adapter for @supabase/ssr
-  const cookieAdapter = {
-    get(name: string) {
-      return c.get(name)?.value;
-    },
-    set(name: string, value: string, opts?: any) {
-      c.set({ name, value, ...opts });
-    },
-    remove(name: string, opts?: any) {
-      c.set({ name, value: "", ...opts, maxAge: 0 });
-    },
-  };
-
-  return createServerClient(url, (service || anon)!, {
-    cookies: cookieAdapter as any,
-  });
-}
-
-// --- helpers ---------------------------------------------------------------
+// Force Node runtime (not edge), because we need server env & OpenAI SDK.
+export const runtime = "nodejs";
 
 type OutItem = { name: string; calories: number };
-type Out = { meal_name: string; items: OutItem[]; total_calories: number };
+type Out = { meal_name: string; total_calories: number; items: OutItem[] };
 
-/** Coerce anything (string/number/null) to a finite non-negative number (or 0) */
-function n(x: any): number {
-  const num = typeof x === "string" ? parseFloat(x.replace(/[^\d.-]/g, "")) : Number(x);
-  if (!isFinite(num) || isNaN(num)) return 0;
-  return Math.max(0, Math.round(num));
+function coerceNumber(x: unknown): number {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.round(n));
 }
 
-/** Safe string (trimmed) */
-function s(x: any): string {
-  if (x == null) return "";
-  const str = String(x).trim();
-  return str.length ? str : "";
+function safeString(x: unknown, fallback = ""): string {
+  if (typeof x === "string") return x.trim();
+  return fallback;
 }
-
-/** Compute a sane Out structure from possibly-messy model JSON */
-function toOut(parsed: any): Out {
-  const items: OutItem[] = Array.isArray(parsed?.items)
-    ? parsed.items.map((it: any) => ({
-        name: s(it?.name) || "item",
-        calories: n(it?.calories),
-      }))
-    : [];
-
-  const sum = n(parsed?.total_calories) || items.reduce((acc, it) => acc + n(it.calories), 0);
-
-  return {
-    meal_name: s(parsed?.meal_name) || (items[0]?.name || "meal"),
-    items,
-    total_calories: sum,
-  };
-}
-
-// --- route -----------------------------------------------------------------
 
 export async function POST(req: Request) {
   try {
-    const { entryId, imageUrl } = await req.json();
+    const { entryId, imageUrl } = (await req.json()) as {
+      entryId?: string;
+      imageUrl?: string;
+    };
 
     if (!entryId || !imageUrl) {
-      return NextResponse.json(
-        { error: "Missing imageUrl or entryId" },
+      return Response.json(
+        { ok: false, error: "Missing entryId or imageUrl" },
         { status: 400 }
       );
     }
 
-    // (Optional) quick HEAD check to surface broken public URLs early
-    try {
-      const head = await fetch(imageUrl, { method: "HEAD", cache: "no-store" });
-      if (!head.ok) {
-        return NextResponse.json(
-          { error: `Image not reachable (${head.status})` },
-          { status: 400 }
-        );
-      }
-    } catch {
-      /* if HEAD is blocked by host, continue */
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    if (!OPENAI_API_KEY) {
+      return Response.json(
+        { ok: false, error: "Missing OPENAI_API_KEY" },
+        { status: 500 }
+      );
     }
 
-    // --- OpenAI Vision call (gpt-4o-mini) ---------------------------------
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+    const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+    if (!SUPABASE_URL || !SERVICE_KEY) {
+      return Response.json(
+        { ok: false, error: "Missing Supabase env (URL or SERVICE KEY)" },
+        { status: 500 }
+      );
+    }
 
-    const system = `
-You are a nutrition assistant. Look at the image of a meal and respond ONLY with JSON:
-{
-  "meal_name": string,        // short human name, e.g. "banana", "apple and yogurt"
-  "items": [                  // 1–5 detected items
-    { "name": string, "calories": number }
-  ],
-  "total_calories": number    // sum of item calories, integer approximate
-}
-- Prefer concise names in English (no brand unless obvious).
-- If unsure, best effort estimate calories from portion size.
-- Always include "total_calories" as an integer number of kcal.
-    `.trim();
+    const admin = createClient(SUPABASE_URL, SERVICE_KEY);
+    const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-    const userText = "Analyze this meal photo and return the JSON. No extra text, no markdown.";
+    // Ask the model for strict JSON only.
+    const systemPrompt = [
+      "You are a nutrition assistant.",
+      "Given a food photo, extract a single overall meal name (short and clear),",
+      "estimate total calories (integer), and list up to 5 main detected items with their calories (integers).",
+      "Always return strict JSON with this exact shape:",
+      `{
+        "meal_name": "banana with yogurt",
+        "total_calories": 320,
+        "items": [
+          {"name": "banana", "calories": 90},
+          {"name": "yogurt", "calories": 230}
+        ]
+      }`,
+      "No extra keys. No commentary. Numbers only for calories.",
+    ].join(" ");
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: system },
+        { role: "system", content: systemPrompt },
         {
           role: "user",
           content: [
-            { type: "text", text: userText },
+            {
+              type: "text",
+              text:
+                "Analyze this photo and return JSON only (no text outside JSON).",
+            },
             {
               type: "image_url",
               image_url: { url: imageUrl },
@@ -134,7 +93,8 @@ You are a nutrition assistant. Look at the image of a meal and respond ONLY with
       ],
     });
 
-    const raw = completion.choices?.[0]?.message?.content || "{}";
+    const raw = completion.choices?.[0]?.message?.content ?? "{}";
+
     let parsed: any;
     try {
       parsed = JSON.parse(raw);
@@ -142,50 +102,54 @@ You are a nutrition assistant. Look at the image of a meal and respond ONLY with
       parsed = {};
     }
 
-    const out = toOut(parsed);
+    // Sanitize output
+    const items: OutItem[] = Array.isArray(parsed?.items)
+      ? parsed.items.map((it: any) => ({
+          name: safeString(it?.name, "item"),
+          calories: coerceNumber(it?.calories),
+        }))
+      : [];
 
-    // --- Persist into Supabase --------------------------------------------
-    const supabase = makeServerSupabase();
+    let total = coerceNumber(parsed?.total_calories);
+    const sum = items.reduce((s, it) => s + coerceNumber(it.calories), 0);
 
-    // First try updating with meal_name + items + total_calories
-    const attempt1 = await supabase
+    // Prefer the sum if model's total is missing/way off
+    if (sum > 0 && (total === 0 || Math.abs(total - sum) > 10)) {
+      total = sum;
+    }
+
+    const meal_name =
+      safeString(parsed?.meal_name) ||
+      safeString(parsed?.food) ||
+      safeString(parsed?.name) ||
+      "meal";
+
+    // Update the entry row with results (service role bypasses RLS)
+    const { error: updErr } = await admin
       .from("entries")
       .update({
-        meal_name: out.meal_name,       // if column does not exist, we'll retry
-        items: out.items,               // jsonb
-        total_calories: out.total_calories,
+        meal_name,
+        total_calories: total,
+        items,
       })
       .eq("id", entryId);
 
-    if (attempt1.error) {
-      // Retry without meal_name in case the column is absent in this environment
-      const attempt2 = await supabase
-        .from("entries")
-        .update({
-          items: out.items,
-          total_calories: out.total_calories,
-        })
-        .eq("id", entryId);
-
-      if (attempt2.error) {
-        return NextResponse.json(
-          { error: attempt2.error.message },
-          { status: 400 }
-        );
-      }
+    if (updErr) {
+      return Response.json(
+        { ok: false, error: `DB update failed: ${updErr.message}` },
+        { status: 500 }
+      );
     }
 
-    return NextResponse.json({
-      ok: true,
-      entryId,
-      meal_name: out.meal_name,
-      total_calories: out.total_calories,
-      items: out.items,
-    });
+    const out: Out = { meal_name, total_calories: total, items };
+    return Response.json(
+      { ok: true, entryId, ...out },
+      { status: 200, headers: { "Cache-Control": "no-store" } }
+    );
   } catch (err: any) {
-    console.error("analyze error:", err);
-    return NextResponse.json(
-      { error: err?.message || "Analyze failed" },
+    console.error("/api/analyze error:", err);
+    return Response.json(
+      { ok: false, error: err?.message || "Analyze failed" },
       { status: 500 }
     );
   }
