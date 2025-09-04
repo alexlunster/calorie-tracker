@@ -6,104 +6,105 @@ import { useI18n } from "@/components/I18nProvider";
 import { pretty } from "@/lib/ui";
 import CircleRing from "@/components/CircleRing";
 
-// Coerce weird values to numbers safely
 const toNum = (v: any) => (typeof v === "number" && isFinite(v) ? v : Number(v ?? 0) || 0);
 
 type Totals = { day: number; week: number; month: number };
-type Goals = { daily_kcal: number | null };
 
 export default function TotalsBar() {
   const { t } = useI18n();
 
   const [totals, setTotals] = useState<Totals>({ day: 0, week: 0, month: 0 });
-  const [goals, setGoals] = useState<Goals>({ daily_kcal: null });
+  const [goal, setGoal] = useState<number>(0);
   const [loading, setLoading] = useState(true);
 
-  const goal = toNum(goals.daily_kcal);
   const eaten = toNum(totals.day);
 
-  // Derived
-  const pct = (n: number) => {
-    if (!isFinite(n) || goal <= 0) return 0;
-    const p = Math.round((n / goal) * 100);
-    if (p < 0) return 0;
-    if (p > 100) return 100;
-    return p;
+  // Derived percent helper (capped 0..100; safe when goal <= 0)
+  const pct = (val: number) => {
+    if (!isFinite(val) || goal <= 0) return 0;
+    const p = Math.round((val / goal) * 100);
+    return p < 0 ? 0 : p > 100 ? 100 : p;
   };
 
-  // Fetch both totals and goals
-  async function fetchTotalsAndGoals() {
+  async function resolveDailyGoal(): Promise<number> {
+    // Try several common places. Ignore errors; return first positive value.
+    async function trySelect(table: string, columns: string[]) {
+      try {
+        const { data, error } = await supabase.from(table).select(columns.join(",")).limit(1).maybeSingle();
+        if (error || !data) return null;
+        for (const col of columns) {
+          if (data[col] != null) {
+            const v = toNum(data[col]);
+            if (v > 0) return v;
+          }
+        }
+        return null;
+      } catch {
+        return null; // table may not exist; ignore
+      }
+    }
+
+    // Common variants
+    const checks: Array<[string, string[]]> = [
+      ["profiles", ["daily_kcal", "daily_goal", "goal_kcal"]],
+      ["user_prefs", ["daily_kcal", "daily_goal", "goal_kcal"]],
+      ["goals", ["daily", "daily_kcal", "kcal"]],
+      ["targets", ["daily", "daily_kcal", "kcal"]],
+      ["settings", ["daily_kcal", "daily_goal", "goal_kcal"]],
+    ];
+
+    for (const [table, cols] of checks) {
+      const v = await trySelect(table, cols);
+      if (typeof v === "number" && v > 0) return v;
+    }
+    return 0;
+  }
+
+  async function fetchTotals() {
+    // Sum entries by periods
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const dayISO = startOfDay.toISOString();
+
+    const startOfWeek = new Date(startOfDay);
+    const dow = (startOfWeek.getDay() + 6) % 7; // Monday=0
+    startOfWeek.setDate(startOfWeek.getDate() - dow);
+    const weekISO = startOfWeek.toISOString();
+
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthISO = startOfMonth.toISOString();
+
+    async function sumSince(iso: string): Promise<number> {
+      const { data, error } = await supabase
+        .from("entries")
+        .select("total_calories, created_at")
+        .gte("created_at", iso)
+        .order("created_at", { ascending: false })
+        .limit(1000);
+      if (error || !data) return 0;
+      return data.reduce((s, r) => s + toNum(r.total_calories), 0);
+    }
+
+    const [d, w, m] = await Promise.all([sumSince(dayISO), sumSince(weekISO), sumSince(monthISO)]);
+    setTotals({ day: d, week: w, month: m });
+  }
+
+  async function hydrate() {
     setLoading(true);
     try {
-      // 1) user
-      const { data: userRes } = await supabase.auth.getUser();
-      const userId = userRes?.user?.id;
-
-      // 2) goals (from profiles or user_prefs; try both)
-      let daily_kcal: number | null = null;
-
-      // try profiles.daily_kcal
-      const { data: prof, error: profErr } = await supabase
-        .from("profiles")
-        .select("daily_kcal")
-        .limit(1)
-        .maybeSingle();
-
-      if (!profErr && prof) {
-        daily_kcal = toNum(prof.daily_kcal) || null;
-      }
-
-      // fallback: user_prefs.daily_kcal
-      if (daily_kcal == null) {
-        const { data: prefs } = await supabase
-          .from("user_prefs")
-          .select("daily_kcal")
-          .limit(1)
-          .maybeSingle();
-        if (prefs) daily_kcal = toNum(prefs.daily_kcal) || null;
-      }
-
-      // 3) totals from entries.total_calories
-      const now = new Date();
-      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const dayISO = startOfDay.toISOString();
-
-      const startOfWeek = new Date(startOfDay);
-      const dow = (startOfWeek.getDay() + 6) % 7; // Monday=0
-      startOfWeek.setDate(startOfWeek.getDate() - dow);
-      const weekISO = startOfWeek.toISOString();
-
-      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      const monthISO = startOfMonth.toISOString();
-
-      // Helper to sum entries since a timestamp
-      async function sumSince(iso: string): Promise<number> {
-        const { data, error } = await supabase
-          .from("entries")
-          .select("total_calories, created_at")
-          .gte("created_at", iso)
-          .order("created_at", { ascending: false })
-          .limit(1000);
-        if (error || !data) return 0;
-        return data.reduce((s, r) => s + toNum(r.total_calories), 0);
-      }
-
-      const [d, w, m] = await Promise.all([sumSince(dayISO), sumSince(weekISO), sumSince(monthISO)]);
-
-      setGoals({ daily_kcal });
-      setTotals({ day: d, week: w, month: m });
+      const [g] = await Promise.all([resolveDailyGoal(), fetchTotals()]);
+      setGoal(toNum(g));
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    fetchTotalsAndGoals();
+    hydrate();
 
-    // Refresh when goals/entries change (UploadCard/Settings can dispatch these)
-    const onGoals = () => fetchTotalsAndGoals();
-    const onEntry = () => fetchTotalsAndGoals();
-    const onVis = () => { if (document.visibilityState === "visible") fetchTotalsAndGoals(); };
+    const onGoals = () => hydrate();
+    const onEntry = () => hydrate();
+    const onVis = () => { if (document.visibilityState === "visible") hydrate(); };
 
     window.addEventListener("goals-updated", onGoals);
     window.addEventListener("entry-added", onEntry);
@@ -119,7 +120,6 @@ export default function TotalsBar() {
   const weekPct = pct(totals.week);
   const monthPct = pct(totals.month);
 
-  // Macro colors for ring segments (approximate split; can be replaced by real macros later)
   const segments = [
     { label: "Carbs",   value: Math.round(eaten * 0.55), color: "#F9736B" },
     { label: "Protein", value: Math.round(eaten * 0.30), color: "#10B981" },
@@ -128,10 +128,8 @@ export default function TotalsBar() {
 
   return (
     <div className="card">
-      {/* Header */}
       <div className="mb-2 text-sm font-medium text-slate-700">{pretty(t("totals") || "totals")}</div>
 
-      {/* Main: Eaten / Ring / Goal */}
       <div className="flex items-center justify-between text-slate-800 text-sm px-1">
         <div className="text-center">
           <div className="text-2xl font-bold">{toNum(totals.day).toLocaleString()}</div>
@@ -146,7 +144,6 @@ export default function TotalsBar() {
         </div>
       </div>
 
-      {/* Secondary rows: week & month progress bars */}
       <div className="mt-4 space-y-3">
         {[
           { label: pretty(t("this_week") || "this_week"), val: totals.week, pct: weekPct },
