@@ -14,7 +14,10 @@ type AnalyzeResponse =
       total_calories: number;
       items: { name: string; calories: number }[];
     }
-  | { error: string };
+  | {
+      ok: false;
+      error: string;
+    };
 
 type EntryRow = {
   id: string;
@@ -69,7 +72,7 @@ export default function UploadCard() {
       const { data: pub } = supabase.storage.from("photos").getPublicUrl(fileName);
       const imageUrl = pub.publicUrl;
 
-      // 3) Insert entry (RLS-safe: pass user_id)
+      // 3) Insert entry (RLS-safe: include user_id)
       const { data: inserted, error: insertErr } = await supabase
         .from("entries")
         .insert({
@@ -97,14 +100,21 @@ export default function UploadCard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ entryId: inserted.id, imageUrl }),
       });
-      const json: AnalyzeResponse = await res.json();
-      if (!res.ok || "error" in json) throw new Error(json.error || "Analyze failed");
+
+      // Parse **always** before branching so we can see the JSON error payload
+      const json = (await res.json()) as AnalyzeResponse;
+
+      // Type-safe narrowing: use the discriminant `ok`
+      if (!res.ok || !json.ok) {
+        const msg = (!json.ok && json.error) || "Analyze failed";
+        throw new Error(msg);
+      }
 
       // 5) Fetch back the updated row (for instant UI update)
       const { data: updated, error: fetchErr } = await supabase
         .from("entries")
         .select("id,user_id,image_url,meal_name,total_calories,created_at,items")
-        .eq("id", inserted.id)
+        .eq("id", json.entryId)
         .single();
 
       if (fetchErr || !updated) {
@@ -114,9 +124,11 @@ export default function UploadCard() {
         return;
       }
 
-      // 6) Success toast
+      // 6) Success toast with newest values
       setSuccess(
-        `${updated.meal_name ?? json.meal_name} — ${updated.total_calories ?? json.total_calories} kcal`
+        `${updated.meal_name ?? json.meal_name} — ${
+          updated.total_calories ?? json.total_calories
+        } kcal`
       );
 
       // 7) 🔔 Broadcast to any listener (Recent Entries / Totals) for immediate UI update
