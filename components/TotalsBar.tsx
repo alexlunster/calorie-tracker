@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useI18n } from "@/components/I18nProvider";
 import { pretty } from "@/lib/ui";
@@ -15,11 +15,9 @@ export default function TotalsBar() {
 
   const [totals, setTotals] = useState<Totals>({ day: 0, week: 0, month: 0 });
   const [goal, setGoal] = useState<number>(0);
-  const [loading, setLoading] = useState(true);
 
   const eaten = toNum(totals.day);
 
-  // Derived percent helper (capped 0..100; safe when goal <= 0)
   const pct = (val: number) => {
     if (!isFinite(val) || goal <= 0) return 0;
     const p = Math.round((val / goal) * 100);
@@ -27,24 +25,23 @@ export default function TotalsBar() {
   };
 
   async function resolveDailyGoal(): Promise<number> {
-    // Try several common places. Ignore errors; return first positive value.
     async function trySelect(table: string, columns: string[]) {
       try {
         const { data, error } = await supabase.from(table).select(columns.join(",")).limit(1).maybeSingle();
         if (error || !data) return null;
+        const row = data as Record<string, unknown>;
         for (const col of columns) {
-          if (data[col] != null) {
-            const v = toNum(data[col]);
+          if (row[col] != null) {
+            const v = toNum(row[col]);
             if (v > 0) return v;
           }
         }
         return null;
       } catch {
-        return null; // table may not exist; ignore
+        return null;
       }
     }
 
-    // Common variants
     const checks: Array<[string, string[]]> = [
       ["profiles", ["daily_kcal", "daily_goal", "goal_kcal"]],
       ["user_prefs", ["daily_kcal", "daily_goal", "goal_kcal"]],
@@ -61,7 +58,6 @@ export default function TotalsBar() {
   }
 
   async function fetchTotals() {
-    // Sum entries by periods
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const dayISO = startOfDay.toISOString();
@@ -82,7 +78,7 @@ export default function TotalsBar() {
         .order("created_at", { ascending: false })
         .limit(1000);
       if (error || !data) return 0;
-      return data.reduce((s, r) => s + toNum(r.total_calories), 0);
+      return data.reduce((s, r) => s + toNum((r as any).total_calories), 0);
     }
 
     const [d, w, m] = await Promise.all([sumSince(dayISO), sumSince(weekISO), sumSince(monthISO)]);
@@ -90,13 +86,8 @@ export default function TotalsBar() {
   }
 
   async function hydrate() {
-    setLoading(true);
-    try {
-      const [g] = await Promise.all([resolveDailyGoal(), fetchTotals()]);
-      setGoal(toNum(g));
-    } finally {
-      setLoading(false);
-    }
+    const [g] = await Promise.all([resolveDailyGoal(), fetchTotals()]);
+    setGoal(toNum(g));
   }
 
   useEffect(() => {
