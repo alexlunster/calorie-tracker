@@ -1,5 +1,76 @@
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabaseClient";
+import OpenAI from "openai";
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
+
+/**
+ * Build a server-side Supabase client. If SUPABASE_SERVICE_ROLE_KEY is present,
+ * we use it (bypasses RLS, safe on the server). Otherwise we fall back to anon
+ * with request cookies so RLS still applies to the logged-in user.
+ */
+function makeServerSupabase() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+  const c = cookies();
+
+  // Minimal cookies adapter for @supabase/ssr
+  const cookieAdapter = {
+    get(name: string) {
+      return c.get(name)?.value;
+    },
+    set(name: string, value: string, opts?: any) {
+      c.set({ name, value, ...opts });
+    },
+    remove(name: string, opts?: any) {
+      c.set({ name, value: "", ...opts, maxAge: 0 });
+    },
+  };
+
+  return createServerClient(url, (service || anon)!, {
+    cookies: cookieAdapter as any,
+  });
+}
+
+// --- helpers ---------------------------------------------------------------
+
+type OutItem = { name: string; calories: number };
+type Out = { meal_name: string; items: OutItem[]; total_calories: number };
+
+/** Coerce anything (string/number/null) to a finite non-negative number (or 0) */
+function n(x: any): number {
+  const num = typeof x === "string" ? parseFloat(x.replace(/[^\d.-]/g, "")) : Number(x);
+  if (!isFinite(num) || isNaN(num)) return 0;
+  return Math.max(0, Math.round(num));
+}
+
+/** Safe string (trimmed) */
+function s(x: any): string {
+  if (x == null) return "";
+  const str = String(x).trim();
+  return str.length ? str : "";
+}
+
+/** Compute a sane Out structure from possibly-messy model JSON */
+function toOut(parsed: any): Out {
+  const items: OutItem[] = Array.isArray(parsed?.items)
+    ? parsed.items.map((it: any) => ({
+        name: s(it?.name) || "item",
+        calories: n(it?.calories),
+      }))
+    : [];
+
+  const sum = n(parsed?.total_calories) || items.reduce((acc, it) => acc + n(it.calories), 0);
+
+  return {
+    meal_name: s(parsed?.meal_name) || (items[0]?.name || "meal"),
+    items,
+    total_calories: sum,
+  };
+}
+
+// --- route -----------------------------------------------------------------
 
 export async function POST(req: Request) {
   try {
@@ -12,142 +83,109 @@ export async function POST(req: Request) {
       );
     }
 
-import OpenAI from "openai";
-import { createClient } from "@supabase/supabase-js";
-
-// ---- Types ----
-type Item = { name: string; calories: number };
-type Out = {
-  meal_name: string;
-  items: Item[];
-  total_calories: number;
-};
-
-// ---- Helpers ----
-function coerceNumber(v: unknown): number {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string") {
-    const n = Number(v.trim());
-    if (Number.isFinite(n)) return n;
-  }
-  return 0;
-}
-
-function safeString(v: unknown, fallback = ""): string {
-  return typeof v === "string" && v.trim().length ? v.trim() : fallback;
-}
-
-function toItems(arr: unknown): Item[] {
-  if (!Array.isArray(arr)) return [];
-  return arr.map((raw: any): Item => {
-    const name = safeString(raw?.name, "item");
-    const calories = coerceNumber(raw?.calories);
-    return { name, calories };
-  });
-}
-
-function toOut(parsed: any): Out {
-  const meal_name = safeString(parsed?.meal_name, "");
-  const items = toItems(parsed?.items);
-  const fromModel = coerceNumber(parsed?.total_calories);
-  const fromItems = items.reduce((s, it) => s + coerceNumber(it.calories), 0);
-  const total_calories = fromModel || fromItems || 0;
-  return { meal_name, items, total_calories };
-}
-
-// ---- OpenAI client ----
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
-
-// ---- Supabase (service role not required; anon key fine for server) ----
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
-
-// ---- Route ----
-export async function POST(req: Request) {
-  try {
-    const { imageUrl, entryId } = await req.json();
-
-    if (!imageUrl || !entryId) {
-      return NextResponse.json(
-        { error: "Missing imageUrl or entryId" },
-        { status: 400 }
-      );
+    // (Optional) quick HEAD check to surface broken public URLs early
+    try {
+      const head = await fetch(imageUrl, { method: "HEAD", cache: "no-store" });
+      if (!head.ok) {
+        return NextResponse.json(
+          { error: `Image not reachable (${head.status})` },
+          { status: 400 }
+        );
+      }
+    } catch {
+      /* if HEAD is blocked by host, continue */
     }
 
-    // Ask the model for strictly-typed JSON
-    const sysPrompt = `
-You are a nutrition assistant. Given a single food photo, return JSON with:
+    // --- OpenAI Vision call (gpt-4o-mini) ---------------------------------
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    const system = `
+You are a nutrition assistant. Look at the image of a meal and respond ONLY with JSON:
 {
-  "meal_name": string,        // short human label e.g. "banana", "chicken salad"
-  "items": [                  // each recognized item with estimated calories
+  "meal_name": string,        // short human name, e.g. "banana", "apple and yogurt"
+  "items": [                  // 1–5 detected items
     { "name": string, "calories": number }
   ],
-  "total_calories": number    // total kcal for the whole photo
+  "total_calories": number    // sum of item calories, integer approximate
 }
-If unsure, make your best reasonable estimate. Numbers must be plain numbers, not strings.
-`;
+- Prefer concise names in English (no brand unless obvious).
+- If unsure, best effort estimate calories from portion size.
+- Always include "total_calories" as an integer number of kcal.
+    `.trim();
+
+    const userText = "Analyze this meal photo and return the JSON. No extra text, no markdown.";
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: sysPrompt },
+        { role: "system", content: system },
         {
           role: "user",
           content: [
-            { type: "input_text", text: "Analyze this photo and return the JSON." },
-            { type: "input_image", image_url: imageUrl },
-          ] as any, // OpenAI SDK types differ between versions; keep as any for safety
+            { type: "text", text: userText },
+            {
+              type: "image_url",
+              image_url: { url: imageUrl },
+            },
+          ],
         },
       ],
     });
 
-    const raw =
-      completion.choices?.[0]?.message?.content?.trim() ||
-      '{"meal_name":"","items":[],"total_calories":0}';
-
-    let parsed: any = {};
+    const raw = completion.choices?.[0]?.message?.content || "{}";
+    let parsed: any;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      // If the model somehow didn't return perfect JSON, fall back to zeros
-      parsed = { meal_name: "", items: [], total_calories: 0 };
+      parsed = {};
     }
 
-    const out = toOut(parsed); // <- ensures correct, non-null numbers
+    const out = toOut(parsed);
 
-    // Update the entry row with results
-    const { error: upErr } = await supabase
+    // --- Persist into Supabase --------------------------------------------
+    const supabase = makeServerSupabase();
+
+    // First try updating with meal_name + items + total_calories
+    const attempt1 = await supabase
       .from("entries")
       .update({
-        meal_name: out.meal_name,
-        items: out.items, // jsonb
+        meal_name: out.meal_name,       // if column does not exist, we'll retry
+        items: out.items,               // jsonb
         total_calories: out.total_calories,
-        updated_at: new Date().toISOString(),
       })
-      .eq("id", entryId)
-      .select("id")
-      .single();
+      .eq("id", entryId);
 
-    if (upErr) {
-      return NextResponse.json(
-        { error: "Failed to update entry", details: upErr.message },
-        { status: 400 }
-      );
+    if (attempt1.error) {
+      // Retry without meal_name in case the column is absent in this environment
+      const attempt2 = await supabase
+        .from("entries")
+        .update({
+          items: out.items,
+          total_calories: out.total_calories,
+        })
+        .eq("id", entryId);
+
+      if (attempt2.error) {
+        return NextResponse.json(
+          { error: attempt2.error.message },
+          { status: 400 }
+        );
+      }
     }
 
-    return NextResponse.json({ ok: true, result: out });
-  } catch (e: any) {
+    return NextResponse.json({
+      ok: true,
+      entryId,
+      meal_name: out.meal_name,
+      total_calories: out.total_calories,
+      items: out.items,
+    });
+  } catch (err: any) {
+    console.error("analyze error:", err);
     return NextResponse.json(
-      {
-        error: "Analyze failed",
-        details: e?.message || String(e),
-      },
+      { error: err?.message || "Analyze failed" },
       { status: 500 }
     );
   }
