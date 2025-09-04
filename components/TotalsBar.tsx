@@ -36,18 +36,20 @@ export default function TotalsBar() {
           }
         }
         return null;
-      } catch { return null; }
+      } catch {
+        return null;
+      }
     }
 
     const checks: Array<[string, string[]]> = [
       ["profiles", ["daily_kcal", "daily_goal", "goal_kcal"]],
-      ["user_prefs", ["daily_kcal", "daily_goal", "goal_kcal"]],
+      ["user_prefs", ["daily_kcal", "daily_goal, goal_kcal".split(", ")[1], "goal_kcal"]],
       ["goals", ["daily", "daily_kcal", "kcal"]],
       ["targets", ["daily", "daily_kcal", "kcal"]],
       ["settings", ["daily_kcal", "daily_goal", "goal_kcal"]],
     ];
-    for (const [t, cols] of checks) {
-      const v = await trySelect(t, cols);
+    for (const [table, cols] of checks) {
+      const v = await trySelect(table, cols);
       if (typeof v === "number" && v > 0) return v;
     }
     return 0;
@@ -92,8 +94,9 @@ export default function TotalsBar() {
     hydrate();
     const onGoals = () => hydrate();
     const onEntry = () => hydrate();
-    const onVis = () => { if (document.visibilityState === "visible") hydrate(); };
-
+    const onVis = () => {
+      if (document.visibilityState === "visible") hydrate();
+    };
     window.addEventListener("goals-updated", onGoals);
     window.addEventListener("entry-added", onEntry);
     document.addEventListener("visibilitychange", onVis);
@@ -149,7 +152,11 @@ export default function TotalsBar() {
               <div className="font-semibold">{toNum(val).toLocaleString()} kcal</div>
             </div>
             <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200">
-              <div className="h-2" style={{ width: `${pct}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }} aria-hidden />
+              <div
+                className="h-2"
+                style={{ width: `${pct}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }}
+                aria-hidden
+              />
             </div>
             <div className="mt-1 text-xs text-slate-600">
               {goal > 0 ? `${pct}% of ${goal} kcal` : pretty(t("no_target_set") || "no_target_set")}
