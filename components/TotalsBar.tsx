@@ -23,24 +23,28 @@ export default function TotalsBar() {
     if (!isFinite(val) || goal <= 0) return 0;
     const p = Math.round((val / goal) * 100);
     return p < 0 ? 0 : p > 100 ? 100 : p;
-    };
+  };
 
   async function resolveDailyGoal(): Promise<number> {
     async function trySelect(table: string, cols: readonly string[]) {
       try {
+        // NB: treat result as unknown to avoid GenericStringError typing issues
         const { data, error } = await supabase
-          .from(table)
+          .from(table as any)
           .select(cols.join(","))
           .limit(1)
           .maybeSingle();
 
         if (error || !data) return null;
 
-        const row = data as Record<string, unknown>;
+        const row: Record<string, unknown> =
+          typeof data === "object" && data !== null ? (data as any) : {};
+
         for (const col of cols) {
-          if (row[col] !== null && row[col] !== undefined) {
-            const v = toNum(row[col]);
-            if (v > 0) return v;
+          const val = row[col];
+          if (val !== null && val !== undefined) {
+            const n = toNum(val);
+            if (n > 0) return n;
           }
         }
         return null;
@@ -67,14 +71,17 @@ export default function TotalsBar() {
 
   async function sumSince(iso: string): Promise<number> {
     const { data, error } = await supabase
-      .from("entries")
+      .from("entries" as any)
       .select("total_calories, created_at")
       .gte("created_at", iso)
       .order("created_at", { ascending: false })
       .limit(1000);
 
     if (error || !data) return 0;
-    return data.reduce((s, r) => s + toNum((r as any).total_calories), 0);
+    return (data as any[]).reduce(
+      (s, r) => s + toNum((r as any).total_calories),
+      0
+    );
   }
 
   async function hydrate() {
