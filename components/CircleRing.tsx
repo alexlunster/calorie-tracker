@@ -6,7 +6,7 @@ export default function CircleRing({
   stroke = 18,
   goal,
   eaten,
-  color = "#10B981", // emerald by default
+  color = "#10B981", // emerald
   center,
 }: {
   size?: number;
@@ -26,12 +26,12 @@ export default function CircleRing({
   return (
     <div style={{ width: size, height: size }} className="relative mx-auto">
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="block">
-        <circle cx={size/2} cy={size/2} r={radius} stroke="#E5ECF6" strokeWidth={stroke} fill="none" />
+        <circle cx={size / 2} cy={size / 2} r={radius} stroke="#E5ECF6" strokeWidth={stroke} fill="none" />
         <circle
-          cx={size/2}
-          cy={size/2}
+          cx={size / 2}
+          cy={size / 2}
           r={radius}
-          transform={`rotate(-90 ${size/2} ${size/2})`}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
           stroke={color}
           strokeLinecap="round"
           strokeWidth={stroke}
@@ -40,9 +40,7 @@ export default function CircleRing({
           fill="none"
         />
       </svg>
-      <div className="absolute inset-0 grid place-items-center">
-        {center ?? null}
-      </div>
+      <div className="absolute inset-0 grid place-items-center">{center ?? null}</div>
     </div>
   );
 }
