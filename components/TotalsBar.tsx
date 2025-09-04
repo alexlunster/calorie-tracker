@@ -6,7 +6,8 @@ import { useI18n } from "@/components/I18nProvider";
 import { pretty } from "@/lib/ui";
 import CircleRing from "@/components/CircleRing";
 
-const toNum = (v: any) => (typeof v === "number" && isFinite(v) ? v : Number(v ?? 0) || 0);
+const toNum = (v: any) =>
+  typeof v === "number" && isFinite(v) ? v : Number(v ?? 0) || 0;
 
 type Totals = { day: number; week: number; month: number };
 
@@ -22,16 +23,23 @@ export default function TotalsBar() {
     if (!isFinite(val) || goal <= 0) return 0;
     const p = Math.round((val / goal) * 100);
     return p < 0 ? 0 : p > 100 ? 100 : p;
-  };
+    };
 
   async function resolveDailyGoal(): Promise<number> {
-    async function trySelect(table: string, cols: string[]) {
+    async function trySelect(table: string, cols: readonly string[]) {
       try {
-        const { data, error } = await supabase.from(table).select(cols.join(",")).limit(1).maybeSingle();
+        const { data, error } = await supabase
+          .from(table)
+          .select(cols.join(","))
+          .limit(1)
+          .maybeSingle();
+
         if (error || !data) return null;
+
+        const row = data as Record<string, unknown>;
         for (const col of cols) {
-          if (data[col] != null) {
-            const v = toNum(data[col]);
+          if (row[col] !== null && row[col] !== undefined) {
+            const v = toNum(row[col]);
             if (v > 0) return v;
           }
         }
@@ -41,13 +49,15 @@ export default function TotalsBar() {
       }
     }
 
-    const checks: Array<[string, string[]]> = [
+    // Try likely locations for a daily kcal goal
+    const checks: Array<[string, readonly string[]]> = [
       ["profiles", ["daily_kcal", "daily_goal", "goal_kcal"]],
-      ["user_prefs", ["daily_kcal", "daily_goal, goal_kcal".split(", ")[1], "goal_kcal"]],
+      ["user_prefs", ["daily_kcal", "daily_goal", "goal_kcal"]],
       ["goals", ["daily", "daily_kcal", "kcal"]],
       ["targets", ["daily", "daily_kcal", "kcal"]],
       ["settings", ["daily_kcal", "daily_goal", "goal_kcal"]],
     ];
+
     for (const [table, cols] of checks) {
       const v = await trySelect(table, cols);
       if (typeof v === "number" && v > 0) return v;
@@ -62,8 +72,9 @@ export default function TotalsBar() {
       .gte("created_at", iso)
       .order("created_at", { ascending: false })
       .limit(1000);
+
     if (error || !data) return 0;
-    return data.reduce((s, r) => s + toNum(r.total_calories), 0);
+    return data.reduce((s, r) => s + toNum((r as any).total_calories), 0);
   }
 
   async function hydrate() {
@@ -72,7 +83,7 @@ export default function TotalsBar() {
     const dayISO = startOfDay.toISOString();
 
     const startOfWeek = new Date(startOfDay);
-    const dow = (startOfWeek.getDay() + 6) % 7;
+    const dow = (startOfWeek.getDay() + 6) % 7; // Monday=0
     startOfWeek.setDate(startOfWeek.getDate() - dow);
     const weekISO = startOfWeek.toISOString();
 
@@ -92,14 +103,17 @@ export default function TotalsBar() {
 
   useEffect(() => {
     hydrate();
+
     const onGoals = () => hydrate();
     const onEntry = () => hydrate();
     const onVis = () => {
       if (document.visibilityState === "visible") hydrate();
     };
+
     window.addEventListener("goals-updated", onGoals);
     window.addEventListener("entry-added", onEntry);
     document.addEventListener("visibilitychange", onVis);
+
     return () => {
       window.removeEventListener("goals-updated", onGoals);
       window.removeEventListener("entry-added", onEntry);
@@ -112,7 +126,9 @@ export default function TotalsBar() {
 
   return (
     <div className="card">
-      <div className="mb-2 text-sm font-medium text-slate-700">{pretty(t("totals") || "totals")}</div>
+      <div className="mb-2 text-sm font-medium text-slate-700">
+        {pretty(t("totals") || "totals")}
+      </div>
 
       <div className="flex items-center justify-between text-slate-800 text-sm px-1">
         <div className="text-center">
