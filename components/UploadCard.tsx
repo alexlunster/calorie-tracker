@@ -5,15 +5,17 @@ import { supabase } from "@/lib/supabaseClient";
 import { useI18n } from "@/components/I18nProvider";
 import { pretty } from "@/lib/ui";
 
-type AnalyzeResponse = {
-  ok: true;
-  entryId: string;
-  meal_name: string;
-  total_calories: number;
-  items: { name: string; calories: number }[];
-} | {
-  error: string;
-};
+type AnalyzeResponse =
+  | {
+      ok: true;
+      entryId: string;
+      meal_name: string;
+      total_calories: number;
+      items: { name: string; calories: number }[];
+    }
+  | {
+      error: string;
+    };
 
 export default function UploadCard() {
   const { t } = useI18n();
@@ -21,7 +23,6 @@ export default function UploadCard() {
   const [error, setError] = React.useState<string | null>(null);
   const [success, setSuccess] = React.useState<string | null>(null);
 
-  // hidden inputs for camera / gallery
   const cameraRef = React.useRef<HTMLInputElement | null>(null);
   const galleryRef = React.useRef<HTMLInputElement | null>(null);
 
@@ -34,60 +35,50 @@ export default function UploadCard() {
   async function handleFile(file: File) {
     setError(null);
     setSuccess(null);
-
     if (!file) return;
-    setSending(true);
 
+    setSending(true);
     try {
-      // 1) Ensure we have a logged-in user
+      // 1) Require logged-in user
       const { data: sess } = await supabase.auth.getSession();
       const userId = sess.session?.user?.id;
-      if (!userId) {
-        throw new Error(pretty(t("please_sign_in") || "please_sign_in"));
-      }
+      if (!userId) throw new Error(pretty(t("please_sign_in") || "please_sign_in"));
 
-      // 2) Upload to Supabase Storage (photos bucket)
+      // 2) Upload to Storage (photos)
       const safeName = file.name.replace(/\s+/g, "-").toLowerCase();
-      const fileName = `${userId}/${Date.now()}-${Math.random()
-        .toString(36)
-        .slice(2, 8)}-${safeName}`;
+      const fileName = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`;
 
       const { error: storageErr } = await supabase.storage
         .from("photos")
         .upload(fileName, file, { cacheControl: "3600", upsert: false });
-
-      if (storageErr) {
-        throw new Error(`Upload failed: ${storageErr.message}`);
-      }
+      if (storageErr) throw new Error(`Upload failed: ${storageErr.message}`);
 
       const { data: pub } = supabase.storage.from("photos").getPublicUrl(fileName);
       const imageUrl = pub.publicUrl;
 
-      // 3) Insert entry row (pass user_id explicitly for RLS)
+      // 3) Insert entry (NO meal_time here; rely on created_at)
       const { data: inserted, error: insertErr } = await supabase
         .from("entries")
         .insert({
-          user_id: userId,                 // 👈 critical for RLS
+          user_id: userId,       // RLS: must match auth.uid()
           image_url: imageUrl,
-          meal_time: new Date().toISOString(),
-          total_calories: 0,
-          items: [],
-          // meal_name can be null initially; analyzer will update
+          total_calories: 0,     // analyzer will update
+          items: [],             // analyzer will update
+          // meal_name left null initially; analyzer will update
         })
         .select("id")
         .single();
 
       if (insertErr || !inserted) {
-        // Helpful hint if RLS blocks
         if (insertErr?.message?.toLowerCase().includes("row-level security")) {
           throw new Error(
-            "Insert blocked by RLS. Ensure entries policies allow insert with user_id = auth.uid() and that user_id default/trigger is set (or you pass user_id explicitly)."
+            "Insert blocked by RLS. Ensure entries policies allow insert with user_id = auth.uid() and that user_id is set (default/trigger or passed explicitly)."
           );
         }
         throw new Error(insertErr?.message || "Failed to create entry");
       }
 
-      // 4) Analyze via server route (OpenAI call + DB update)
+      // 4) Analyze via API (OpenAI + DB update)
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -99,24 +90,15 @@ export default function UploadCard() {
         throw new Error(("error" in json && json.error) || "Analyze failed");
       }
 
-      // 5) Success message
-      setSuccess(
-        `${pretty(t("saved") || "saved")}: ${json.meal_name} — ${json.total_calories} kcal`
-      );
+      setSuccess(`${pretty(t("saved") || "saved")}: ${json.meal_name} — ${json.total_calories} kcal`);
 
-      // 6) Optional: refresh data on the page (if you rely on SWR/React cache you can revalidate here)
-      try {
-        // If you use Next.js revalidateTag or router refresh, plug it here.
-        // e.g., router.refresh();
-      } catch {
-        /* no-op */
-      }
+      // optional: refresh page data if needed
+      // router.refresh();
     } catch (err: any) {
       console.error(err);
       setError(err?.message || "Upload failed");
     } finally {
       setSending(false);
-      // reset inputs so the same file can be selected again
       if (cameraRef.current) cameraRef.current.value = "";
       if (galleryRef.current) galleryRef.current.value = "";
     }
@@ -126,7 +108,7 @@ export default function UploadCard() {
     <div className="border rounded-lg p-4 shadow-sm bg-white">
       <h2 className="text-lg font-semibold mb-3">{pretty(t("upload_photo") || "upload_photo")}</h2>
 
-      {/* hidden file inputs */}
+      {/* hidden inputs */}
       <input
         ref={cameraRef}
         id="cameraInput"
@@ -158,9 +140,7 @@ export default function UploadCard() {
             sending ? "bg-blue-400" : "bg-blue-600 hover:bg-blue-700"
           }`}
         >
-          {sending
-            ? pretty(t("uploading") || "uploading") + "…"
-            : pretty(t("take_photo") || "take_photo")}
+          {sending ? pretty(t("uploading") || "uploading") + "…" : pretty(t("take_photo") || "take_photo")}
         </label>
 
         <label
@@ -173,7 +153,6 @@ export default function UploadCard() {
         </label>
       </div>
 
-      {/* messages */}
       {success && (
         <div className="mt-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
           {success}
@@ -185,7 +164,6 @@ export default function UploadCard() {
         </div>
       )}
 
-      {/* tiny hint */}
       <p className="mt-3 text-xs text-gray-500">
         {pretty(t("analysis_takes_a_moment") || "analysis_takes_a_moment")}
       </p>
