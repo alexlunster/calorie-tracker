@@ -17,42 +17,27 @@ export const metadata: Metadata = {
       { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }
     ]
   },
+  viewport: { width: "device-width", initialScale: 1, viewportFit: "cover" },
   themeColor: "#ffffff",
 };
 
-function normalizeLang(input?: string): Lang {
-  const v = (input || "").toLowerCase();
-  if (v === "en" || v === "ru" || v === "de") return v as Lang;
+function normalizeLang(raw?: string): Lang {
+  if (raw === "de" || raw === "ru" || raw === "en") return raw;
   return "en";
 }
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  // Read cookie on the server, normalize to Lang union
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   const cookieStore = cookies();
-  const cookieLang = cookieStore.get("lang")?.value;
-  const lang = normalizeLang(cookieLang);
-
+  const lang = normalizeLang(cookieStore.get("lang")?.value);
   return (
-    <html lang={lang} suppressHydrationWarning>
-      <head>
-        {/* PWA / iOS */}
-        <link rel="manifest" href="/manifest.json" />
-        <meta name="theme-color" content="#ffffff" />
-        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-title" content="Calorie Tracker" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-        {/* Favicon fallback */}
-        <link rel="icon" href="/favicon.ico" />
-      </head>
-      <body>
-        {/* Provide the normalized Lang to the client provider */}
+    <html lang={lang}>
+      <body className="min-h-dvh antialiased">
         <I18nProvider lang={lang}>
-          <main>{children}</main>
+          <div className="min-h-dvh w-full bg-gradient-to-br from-[#FFE3C1] via-[#FFD6C7] to-[#FEE1F1]">
+            <main className="mx-auto max-w-md px-4 pt-[calc(env(safe-area-inset-top,0)+12px)] pb-[calc(env(safe-area-inset-bottom,0)+16px)]">
+              {children}
+            </main>
+          </div>
         </I18nProvider>
       </body>
     </html>
