@@ -23,22 +23,26 @@ export default function CircleRing({
   const ratio = goal > 0 ? clamped / goal : 0;
   const len = Math.max(0, circ * ratio);
 
+  const showStroke = len > 0.5; // avoid the “single dot” cap when 0
+
   return (
     <div style={{ width: size, height: size }} className="relative mx-auto">
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="block">
         <circle cx={size / 2} cy={size / 2} r={radius} stroke="#E5ECF6" strokeWidth={stroke} fill="none" />
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          transform={`rotate(-90 ${size / 2} ${size / 2})`}
-          stroke={color}
-          strokeLinecap="round"
-          strokeWidth={stroke}
-          strokeDasharray={`${len} ${circ}`}
-          strokeDashoffset={0}
-          fill="none"
-        />
+        {showStroke && (
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            transform={`rotate(-90 ${size / 2} ${size / 2})`}
+            stroke={color}
+            strokeLinecap="round"
+            strokeWidth={stroke}
+            strokeDasharray={`${len} ${circ}`}
+            strokeDashoffset={0}
+            fill="none"
+          />
+        )}
       </svg>
       <div className="absolute inset-0 grid place-items-center">{center ?? null}</div>
     </div>
