@@ -6,9 +6,7 @@ import { useI18n } from "@/components/I18nProvider";
 import { pretty } from "@/lib/ui";
 import CircleRing from "@/components/CircleRing";
 
-const toNum = (v: any) =>
-  typeof v === "number" && isFinite(v) ? v : Number(v ?? 0) || 0;
-
+const toNum = (v: any) => (typeof v === "number" && isFinite(v) ? v : Number(v ?? 0) || 0);
 type Totals = { day: number; week: number; month: number };
 
 export default function TotalsBar() {
@@ -25,21 +23,33 @@ export default function TotalsBar() {
     return p < 0 ? 0 : p > 100 ? 100 : p;
   };
 
-  async function resolveDailyGoal(): Promise<number> {
-    async function trySelect(table: string, cols: readonly string[]) {
+  async function getUserId(): Promise<string | null> {
+    try {
+      const { data } = await supabase.auth.getUser();
+      return data?.user?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolveDailyGoal(userId: string | null): Promise<number> {
+    if (!userId) return 0;
+
+    async function pick<T extends Record<string, unknown>>(
+      table: string,
+      cols: readonly string[],
+      idCol: "id" | "user_id"
+    ) {
       try {
-        // NB: treat result as unknown to avoid GenericStringError typing issues
         const { data, error } = await supabase
           .from(table as any)
           .select(cols.join(","))
+          .eq(idCol as any, userId)
           .limit(1)
           .maybeSingle();
 
         if (error || !data) return null;
-
-        const row: Record<string, unknown> =
-          typeof data === "object" && data !== null ? (data as any) : {};
-
+        const row = data as Record<string, unknown>;
         for (const col of cols) {
           const val = row[col];
           if (val !== null && val !== undefined) {
@@ -53,38 +63,33 @@ export default function TotalsBar() {
       }
     }
 
-    // Try likely locations for a daily kcal goal
-    const checks: Array<[string, readonly string[]]> = [
-      ["profiles", ["daily_kcal", "daily_goal", "goal_kcal"]],
-      ["user_prefs", ["daily_kcal", "daily_goal", "goal_kcal"]],
-      ["goals", ["daily", "daily_kcal", "kcal"]],
-      ["targets", ["daily", "daily_kcal", "kcal"]],
-      ["settings", ["daily_kcal", "daily_goal", "goal_kcal"]],
-    ];
-
-    for (const [table, cols] of checks) {
-      const v = await trySelect(table, cols);
-      if (typeof v === "number" && v > 0) return v;
-    }
-    return 0;
+    // Most common schema patterns
+    return (
+      (await pick("profiles", ["daily_kcal", "daily_goal", "goal_kcal"], "id")) ??
+      (await pick("user_prefs", ["daily_kcal", "daily_goal", "goal_kcal"], "user_id")) ??
+      (await pick("goals", ["daily_kcal", "kcal", "daily"], "user_id")) ??
+      (await pick("settings", ["daily_kcal", "daily_goal", "goal_kcal"], "user_id")) ??
+      0
+    );
   }
 
-  async function sumSince(iso: string): Promise<number> {
+  async function sumSince(userId: string | null, iso: string): Promise<number> {
+    if (!userId) return 0;
     const { data, error } = await supabase
       .from("entries" as any)
-      .select("total_calories, created_at")
+      .select("total_calories, created_at, user_id")
+      .eq("user_id", userId)
       .gte("created_at", iso)
       .order("created_at", { ascending: false })
       .limit(1000);
 
     if (error || !data) return 0;
-    return (data as any[]).reduce(
-      (s, r) => s + toNum((r as any).total_calories),
-      0
-    );
+    return (data as any[]).reduce((s, r) => s + toNum((r as any).total_calories), 0);
   }
 
   async function hydrate() {
+    const userId = await getUserId();
+
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const dayISO = startOfDay.toISOString();
@@ -98,10 +103,10 @@ export default function TotalsBar() {
     const monthISO = startOfMonth.toISOString();
 
     const [g, d, w, m] = await Promise.all([
-      resolveDailyGoal(),
-      sumSince(dayISO),
-      sumSince(weekISO),
-      sumSince(monthISO),
+      resolveDailyGoal(userId),
+      sumSince(userId, dayISO),
+      sumSince(userId, weekISO),
+      sumSince(userId, monthISO),
     ]);
 
     setGoal(toNum(g));
@@ -113,14 +118,11 @@ export default function TotalsBar() {
 
     const onGoals = () => hydrate();
     const onEntry = () => hydrate();
-    const onVis = () => {
-      if (document.visibilityState === "visible") hydrate();
-    };
+    const onVis = () => { if (document.visibilityState === "visible") hydrate(); };
 
     window.addEventListener("goals-updated", onGoals);
     window.addEventListener("entry-added", onEntry);
     document.addEventListener("visibilitychange", onVis);
-
     return () => {
       window.removeEventListener("goals-updated", onGoals);
       window.removeEventListener("entry-added", onEntry);
@@ -133,9 +135,7 @@ export default function TotalsBar() {
 
   return (
     <div className="card">
-      <div className="mb-2 text-sm font-medium text-slate-700">
-        {pretty(t("totals") || "totals")}
-      </div>
+      <div className="mb-2 text-sm font-medium text-slate-700">{pretty(t("totals") || "totals")}</div>
 
       <div className="flex items-center justify-between text-slate-800 text-sm px-1">
         <div className="text-center">
@@ -175,11 +175,7 @@ export default function TotalsBar() {
               <div className="font-semibold">{toNum(val).toLocaleString()} kcal</div>
             </div>
             <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200">
-              <div
-                className="h-2"
-                style={{ width: `${pct}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }}
-                aria-hidden
-              />
+              <div className="h-2" style={{ width: `${pct}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }} aria-hidden />
             </div>
             <div className="mt-1 text-xs text-slate-600">
               {goal > 0 ? `${pct}% of ${goal} kcal` : pretty(t("no_target_set") || "no_target_set")}
