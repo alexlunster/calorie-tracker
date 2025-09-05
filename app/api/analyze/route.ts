@@ -1,4 +1,3 @@
-// app/api/analyze/route.ts
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
@@ -7,58 +6,56 @@ export const runtime = "nodejs";
 type OutItem = { name: string; calories: number };
 type Out = { meal_name: string; total_calories: number; items: OutItem[] };
 
-function coerceNumber(x: unknown): number {
-  const n = Number(x);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.round(n));
+const clampInt = (n: unknown) => {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(0, Math.round(v));
+};
+const s = (x: unknown) => (typeof x === "string" ? x : String(x ?? ""));
+
+function normalize(o: any): Out {
+  const meal = s(o?.meal_name ?? o?.name ?? "meal");
+  const itemsArr: any[] = Array.isArray(o?.items) ? o.items : [];
+  const items: OutItem[] = itemsArr.map((it) => ({ name: s(it?.name ?? "item"), calories: clampInt(it?.calories) }));
+  let total = clampInt(o?.total_calories ?? o?.calories ?? 0);
+  if (total <= 0 && items.length) total = clampInt(items.reduce((sum, it) => sum + clampInt(it.calories), 0));
+  return { meal_name: meal || "meal", total_calories: total, items };
 }
 
-function safeJSON(s: string): Out {
-  try {
-    const o = JSON.parse(s);
-    const meal = String(o.meal_name ?? o.name ?? "meal");
-    const total = coerceNumber(o.total_calories ?? o.calories ?? 0);
-    const itemsArr = Array.isArray(o.items) ? o.items : [];
-    const items = itemsArr.map((it: any) => ({
-      name: String(it?.name ?? "item"),
-      calories: coerceNumber(it?.calories),
-    }));
-    return { meal_name: meal, total_calories: total, items };
-  } catch {
-    return { meal_name: "meal", total_calories: 0, items: [] };
+function parseJson(text: string): Out {
+  try { return normalize(JSON.parse(text)); }
+  catch {
+    const m = text.match(/"total_calories"\s*:\s*(\d+)/i) || text.match(/"calories"\s*:\s*(\d+)/i);
+    const kcal = m ? clampInt(m[1]) : 0;
+    return { meal_name: "meal", total_calories: kcal, items: [] };
   }
 }
 
-async function readImageFromRequest(req: Request) {
+async function readImage(req: Request) {
   const ct = (req.headers.get("content-type") || "").toLowerCase();
 
-  // 1) Multipart / urlencoded -> use formData
   if (ct.includes("multipart/form-data") || ct.includes("application/x-www-form-urlencoded")) {
     const form = await req.formData();
     const file = form.get("file") as File | null;
-    const entryId = String(form.get("entryId") ?? "");
+    const entryId = s(form.get("entryId") ?? "");
     if (!file) return { error: "no_file" } as const;
     const buf = Buffer.from(await file.arrayBuffer());
     const mime = file.type || "image/jpeg";
-    const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
-    return { entryId, dataUrl } as const;
+    return { entryId, dataUrl: `data:${mime};base64,${buf.toString("base64")}` } as const;
   }
 
-  // 2) JSON -> expect { image | imageUrl | dataUrl, entryId }
   if (ct.includes("application/json")) {
     const body = await req.json().catch(() => ({}));
-    const src: string | undefined = body?.dataUrl || body?.image || body?.imageUrl;
-    const entryId = String(body?.entryId ?? "");
+    const src: string | undefined = (body as any)?.dataUrl || (body as any)?.image || (body as any)?.imageUrl;
+    const entryId = s((body as any)?.entryId ?? "");
     if (!src) return { error: "no_file" } as const;
     return { entryId, dataUrl: src } as const;
   }
 
-  // 3) Raw image (image/*)
   if (ct.startsWith("image/")) {
     const blob = await req.blob();
     const arr = Buffer.from(await blob.arrayBuffer());
-    const dataUrl = `data:${ct};base64,${arr.toString("base64")}`;
-    return { entryId: "", dataUrl } as const;
+    return { entryId: "", dataUrl: `data:${ct};base64,${arr.toString("base64")}` } as const;
   }
 
   return { error: "unsupported_content_type" } as const;
@@ -66,42 +63,33 @@ async function readImageFromRequest(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const src = await readImageFromRequest(req);
-    if ("error" in src) {
-      return Response.json(
-        { ok: false, error: src.error },
-        { status: 400 }
-      );
-    }
+    const src = await readImage(req);
+    if ("error" in src) return Response.json({ ok: false, error: src.error }, { status: 400 });
 
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || "" });
 
-    const prompt =
-      "You are a nutrition assistant. Estimate total calories and return ONLY valid JSON with keys: meal_name (string), total_calories (number), items (array of {name, calories}).";
+    const system =
+      "You are a nutrition assistant. Only respond with strict JSON (no markdown, no prose). " +
+      'Schema: {"meal_name": string, "total_calories": number, "items": [{"name": string, "calories": number}]}. ' +
+      "Calories are integers (kcal). Do not include extra keys.";
+    const userText =
+      "Analyze the photo and estimate total_calories and item list. Return ONLY the JSON object per the schema.";
 
-    // Correct vision shape: "image_url" with { url }
-    const chat = await openai.chat.completions.create({
+    const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
+      response_format: { type: "json_object" }, // force valid JSON
       messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            { type: "image_url", image_url: { url: src.dataUrl } },
-          ],
-        },
+        { role: "system", content: system },
+        { role: "user", content: [{ type: "text", text: userText }, { type: "image_url", image_url: { url: src.dataUrl } }] },
       ],
       temperature: 0.2,
     });
 
-    const raw = chat.choices?.[0]?.message?.content ?? "";
-    const text = Array.isArray(raw)
-      ? raw.map((p: any) => (typeof p?.text === "string" ? p.text : "")).join("\n")
-      : String(raw);
+    const raw = completion.choices?.[0]?.message?.content ?? "";
+    const text = Array.isArray(raw) ? raw.map((p: any) => (typeof p?.text === "string" ? p.text : "")).join("\n") : String(raw);
+    const parsed = parseJson(text);
 
-    const parsed = safeJSON(text);
-
-    // Update the entry if provided
+    // Update entry if provided
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
     const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const admin = createClient(url, key);
@@ -119,9 +107,6 @@ export async function POST(req: Request) {
 
     return Response.json({ ok: true, entryId: src.entryId, ...parsed });
   } catch (e: any) {
-    return Response.json(
-      { ok: false, error: e?.message || "unknown_error" },
-      { status: 500 }
-    );
+    return Response.json({ ok: false, error: e?.message || "unknown_error" }, { status: 500 });
   }
 }
