@@ -32,57 +32,58 @@ export default function TotalsBar() {
     }
   }
 
+  // --- TS-safe, minimal-generic helpers (avoid deep type instantiation) ---
+  async function pickGoalRow(
+    table: string,
+    cols: string[],
+    idCol: "id" | "user_id",
+    userId: string
+  ): Promise<number | null> {
+    try {
+      const { data, error } = await (supabase as any)
+        .from(table)
+        .select(cols.join(","))
+        .eq(idCol, userId)
+        .limit(1)
+        .maybeSingle();
+
+      if (error || !data) return null;
+
+      const row: Record<string, unknown> = data;
+      for (const col of cols) {
+        const val = row[col];
+        if (val !== null && val !== undefined) {
+          const n = toNum(val);
+          if (n > 0) return n;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   async function resolveDailyGoal(userId: string | null): Promise<number> {
     if (!userId) return 0;
 
-    async function pick<T extends Record<string, unknown>>(
-      table: string,
-      cols: readonly string[],
-      idCol: "id" | "user_id"
-    ) {
-      try {
-        const { data, error } = await supabase
-          .from(table as any)
-          .select(cols.join(","))
-          .eq(idCol as any, userId)
-          .limit(1)
-          .maybeSingle();
-
-        if (error || !data) return null;
-        const row = data as Record<string, unknown>;
-        for (const col of cols) {
-          const val = row[col];
-          if (val !== null && val !== undefined) {
-            const n = toNum(val);
-            if (n > 0) return n;
-          }
-        }
-        return null;
-      } catch {
-        return null;
-      }
-    }
-
-    // Most common schema patterns
     return (
-      (await pick("profiles", ["daily_kcal", "daily_goal", "goal_kcal"], "id")) ??
-      (await pick("user_prefs", ["daily_kcal", "daily_goal", "goal_kcal"], "user_id")) ??
-      (await pick("goals", ["daily_kcal", "kcal", "daily"], "user_id")) ??
-      (await pick("settings", ["daily_kcal", "daily_goal", "goal_kcal"], "user_id")) ??
+      (await pickGoalRow("profiles", ["daily_kcal", "daily_goal", "goal_kcal"], "id", userId)) ??
+      (await pickGoalRow("user_prefs", ["daily_kcal", "daily_goal", "goal_kcal"], "user_id", userId)) ??
+      (await pickGoalRow("goals", ["daily_kcal", "kcal", "daily"], "user_id", userId)) ??
+      (await pickGoalRow("settings", ["daily_kcal", "daily_goal", "goal_kcal"], "user_id", userId)) ??
       0
     );
   }
 
   async function sumSince(userId: string | null, iso: string): Promise<number> {
     if (!userId) return 0;
-    const { data, error } = await supabase
-      .from("entries" as any)
+    const { data, error } = await (supabase as any)
+      .from("entries")
       .select("total_calories, created_at, user_id")
       .eq("user_id", userId)
       .gte("created_at", iso)
       .order("created_at", { ascending: false })
       .limit(1000);
-
     if (error || !data) return 0;
     return (data as any[]).reduce((s, r) => s + toNum((r as any).total_calories), 0);
   }
@@ -115,11 +116,9 @@ export default function TotalsBar() {
 
   useEffect(() => {
     hydrate();
-
     const onGoals = () => hydrate();
     const onEntry = () => hydrate();
     const onVis = () => { if (document.visibilityState === "visible") hydrate(); };
-
     window.addEventListener("goals-updated", onGoals);
     window.addEventListener("entry-added", onEntry);
     document.addEventListener("visibilitychange", onVis);
