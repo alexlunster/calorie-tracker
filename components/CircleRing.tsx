@@ -1,5 +1,5 @@
 "use client";
-import React from "react";
+import React, { useMemo } from "react";
 
 export default function CircleRing({
   size = 220,
@@ -16,19 +16,36 @@ export default function CircleRing({
   color?: string;
   center?: React.ReactNode;
 }) {
-  const radius = (size - stroke) / 2;
-  const circ = 2 * Math.PI * radius;
+  const { radius, circ, len } = useMemo(() => {
+    const r = (size - stroke) / 2;
+    const c = 2 * Math.PI * r;
+    const g = Math.max(0, Number(goal) || 0);
+    const e = Math.max(0, Number(eaten) || 0);
+    const rr = g > 0 ? Math.min(1, e / g) : 0;
+    const l = Math.max(0, c * rr);
+    return { radius: r, circ: c, len: l };
+  }, [size, stroke, goal, eaten]);
 
-  const clamped = Math.max(0, Math.min(eaten, goal));
-  const ratio = goal > 0 ? clamped / goal : 0;
-  const len = Math.max(0, circ * ratio);
-
-  const showStroke = len > 0.5; // avoid the “single dot” cap when 0
+  // Don't draw the stroke when nothing eaten or goal not set → avoids the “dot”
+  const showStroke = len >= 1;
 
   return (
     <div style={{ width: size, height: size }} className="relative mx-auto">
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="block">
-        <circle cx={size / 2} cy={size / 2} r={radius} stroke="#E5ECF6" strokeWidth={stroke} fill="none" />
+      <svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        className="block"
+        key={`ring-${goal}-${eaten}`} // force update if props change
+      >
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke="#E5ECF6"
+          strokeWidth={stroke}
+          fill="none"
+        />
         {showStroke && (
           <circle
             cx={size / 2}
