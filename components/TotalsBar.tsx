@@ -32,7 +32,6 @@ export default function TotalsBar() {
     }
   }
 
-  // --- TS-safe, minimal-generic helpers (avoid deep type instantiation) ---
   async function pickGoalRow(
     table: string,
     cols: string[],
@@ -46,14 +45,12 @@ export default function TotalsBar() {
         .eq(idCol, userId)
         .limit(1)
         .maybeSingle();
-
       if (error || !data) return null;
-
       const row: Record<string, unknown> = data;
       for (const col of cols) {
-        const val = row[col];
-        if (val !== null && val !== undefined) {
-          const n = toNum(val);
+        const v = row[col];
+        if (v !== null && v !== undefined) {
+          const n = toNum(v);
           if (n > 0) return n;
         }
       }
@@ -65,7 +62,6 @@ export default function TotalsBar() {
 
   async function resolveDailyGoal(userId: string | null): Promise<number> {
     if (!userId) return 0;
-
     return (
       (await pickGoalRow("profiles", ["daily_kcal", "daily_goal", "goal_kcal"], "id", userId)) ??
       (await pickGoalRow("user_prefs", ["daily_kcal", "daily_goal", "goal_kcal"], "user_id", userId)) ??
@@ -116,15 +112,22 @@ export default function TotalsBar() {
 
   useEffect(() => {
     hydrate();
+
     const onGoals = () => hydrate();
-    const onEntry = () => hydrate();
-    const onVis = () => { if (document.visibilityState === "visible") hydrate(); };
+    const onEntryCreated = () => hydrate();
+    const onLegacyAdded = () => hydrate();
+    const onVis = () => {
+      if (document.visibilityState === "visible") hydrate();
+    };
+
     window.addEventListener("goals-updated", onGoals);
-    window.addEventListener("entry-added", onEntry);
+    window.addEventListener("entry:created", onEntryCreated);
+    window.addEventListener("entry-added", onLegacyAdded);
     document.addEventListener("visibilitychange", onVis);
     return () => {
       window.removeEventListener("goals-updated", onGoals);
-      window.removeEventListener("entry-added", onEntry);
+      window.removeEventListener("entry:created", onEntryCreated);
+      window.removeEventListener("entry-added", onLegacyAdded);
       document.removeEventListener("visibilitychange", onVis);
     };
   }, []);
@@ -174,7 +177,14 @@ export default function TotalsBar() {
               <div className="font-semibold">{toNum(val).toLocaleString()} kcal</div>
             </div>
             <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200">
-              <div className="h-2" style={{ width: `${pct}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }} aria-hidden />
+              <div
+                className="h-2"
+                style={{
+                  width: `${pct}%`,
+                  background: "linear-gradient(90deg,#F9736B,#F59E0B)",
+                }}
+                aria-hidden
+              />
             </div>
             <div className="mt-1 text-xs text-slate-600">
               {goal > 0 ? `${pct}% of ${goal} kcal` : pretty(t("no_target_set") || "no_target_set")}
