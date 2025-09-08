@@ -124,6 +124,7 @@ export default function TotalsBar() {
     const onGoals = () => hydrate();
     const onEntryCreated = () => hydrate();
     const onLegacyAdded = () => hydrate();
+    const onEntryUpdated = () => hydrate();
     const onVis = () => {
       if (document.visibilityState === "visible") hydrate();
     };
@@ -131,17 +132,24 @@ export default function TotalsBar() {
     window.addEventListener("goals-updated", onGoals);
     window.addEventListener("entry:created", onEntryCreated);
     window.addEventListener("entry-added", onLegacyAdded);
+    window.addEventListener("entry:updated", onEntryUpdated);
     document.addEventListener("visibilitychange", onVis);
     return () => {
       window.removeEventListener("goals-updated", onGoals);
       window.removeEventListener("entry:created", onEntryCreated);
       window.removeEventListener("entry-added", onLegacyAdded);
+      window.removeEventListener("entry:updated", onEntryUpdated);
       document.removeEventListener("visibilitychange", onVis);
     };
   }, []);
 
   const weekPct = pct(totals.week, goalWeek);
   const monthPct = pct(totals.month, goalMonth);
+
+  // Over-limit state for the day
+  const remaining = (goalDay || 0) - eaten;
+  const isOver = (goalDay || 0) > 0 && eaten >= (goalDay || 0);
+  const ringColor = isOver ? "#EF4444" : "#10B981";
 
   return (
     <div className="card">
@@ -158,15 +166,15 @@ export default function TotalsBar() {
         <CircleRing
           goal={goalDay || 0}
           eaten={eaten}
-          color="#10B981"
+          color={ringColor}
           center={
             <div className="text-center">
-              <div className="text-4xl font-extrabold text-slate-900 leading-tight">
-                {Math.max(0, (goalDay || 0) - eaten).toLocaleString()}
+              <div className={`text-4xl font-extrabold leading-tight ${isOver ? "text-red-600" : "text-slate-900"}`}>
+                {remaining.toLocaleString()}
                 <span className="text-lg align-baseline"> kcal</span>
               </div>
               <div className="text-sm text-slate-600 -mt-1">
-                {pretty(t("remaining") || "remaining")}
+                {isOver ? "Too much food!" : pretty(t("remaining") || "remaining")}
               </div>
             </div>
           }
@@ -183,12 +191,12 @@ export default function TotalsBar() {
           { label: pretty(t("this_week") || "this_week"), val: totals.week, pct: weekPct, denom: goalWeek },
           { label: pretty(t("this_month") || "this_month"), val: totals.month, pct: monthPct, denom: goalMonth },
         ].map(({ label, val, pct, denom }, i) => (
-          <div key={i} className="rounded-2xl bg-white/70 backdrop-blur px-3 py-2 shadow-sm">
-            <div className="flex items-center justify-between text-sm text-slate-800">
-              <div>{label}</div>
-              <div className="font-semibold">{toNum(val).toLocaleString()} kcal</div>
+          <div key={i}>
+            <div className="flex items-center justify-between text-sm">
+              <div className="text-slate-700">{label}</div>
+              <div className="font-semibold">{Math.round(val).toLocaleString()} kcal</div>
             </div>
-            <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200">
+            <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
               <div
                 className="h-2"
                 style={{ width: `${pct}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }}
