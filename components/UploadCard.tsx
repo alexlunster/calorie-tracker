@@ -1,194 +1,249 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import React from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { useI18n } from "@/components/I18nProvider";
 import { pretty } from "@/lib/ui";
 
-type ModelItem = { name: string; calories: number | string };
-type AnalyzeResponse = {
-  meal_name?: string;
-  items?: ModelItem[];
-  total_calories?: number | string;
-};
-
-function toNum(v: unknown): number {
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) ? n : 0;
+// Keep only last 3 photos per user (best-effort; errors ignored)
+async function keepOnlyLast3Photos(userId: string) {
+  try {
+    const { data: list, error } = await (supabase as any)
+      .storage
+      .from("photos")
+      .list(userId, { limit: 100, sortBy: { column: "updated_at", order: "desc" } });
+    if (error || !Array.isArray(list)) return;
+    const toDelete = list.slice(3).map((it: any) => `${userId}/${it.name}`);
+    if (toDelete.length) {
+      await (supabase as any).storage.from("photos").remove(toDelete);
+    }
+  } catch {
+    /* ignore */
+  }
 }
+
+type AnalyzeResponse =
+  | {
+      ok: true;
+      entryId: string;
+      meal_name: string;
+      total_calories: number;
+      items: { name: string; calories: number }[];
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+type EntryRow = {
+  id: string;
+  user_id: string;
+  image_url: string | null;
+  meal_name: string | null;
+  total_calories: number | null;
+  created_at: string;
+  items?: { name: string; calories: number }[] | null;
+};
 
 export default function UploadCard() {
   const { t } = useI18n();
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const router = useRouter();
 
-  // toast
-  const [showToast, setShowToast] = useState(false);
-  const [toastMsg, setToastMsg] = useState("");
+  const [sending, setSending] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [success, setSuccess] = React.useState<string | null>(null);
 
-  useEffect(() => {
-    if (!showToast) return;
-    const id = setTimeout(() => setShowToast(false), 3000);
+  const cameraRef = React.useRef<HTMLInputElement | null>(null);
+  const galleryRef = React.useRef<HTMLInputElement | null>(null);
+
+  React.useEffect(() => {
+    if (!success) return;
+    const id = setTimeout(() => setSuccess(null), 3500);
     return () => clearTimeout(id);
-  }, [showToast]);
+  }, [success]);
 
-  const pickFromGallery = () => {
-    inputRef.current?.removeAttribute("capture");
-    inputRef.current?.click();
-  };
-  const takePhoto = () => {
-    inputRef.current?.setAttribute("capture", "environment");
-    inputRef.current?.click();
-  };
+  async function handleFile(file: File) {
+    setError(null);
+    setSuccess(null);
+    if (!file) return;
 
-  async function handleFiles(files: FileList | null) {
-    if (!files || files.length === 0) return;
-
-    setBusy(true);
-    setErr(null);
+    setSending(true);
     try {
-      const { data: auth } = await supabase.auth.getUser();
-      if (!auth.user) throw new Error(pretty(t("please_sign_in_first") || "please_sign_in_first"));
-      const userId = auth.user.id;
+      // 1) Must be signed in
+      const { data: sess } = await supabase.auth.getSession();
+      const userId = sess.session?.user?.id;
+      if (!userId) throw new Error(pretty(t("please_sign_in") || "please_sign_in"));
 
-      // 1) upload
-      const file = files[0];
-      const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      const key = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+      // 2) Upload image to Storage (photos)
+      const safeName = file.name.replace(/\s+/g, "-").toLowerCase();
+      const fileName = `${userId}/${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}-${safeName}`;
 
-      const { error: upErr } = await supabase.storage
+      const { error: storageErr } = await supabase.storage
         .from("photos")
-        .upload(key, file, { cacheControl: "3600", upsert: false });
-      if (upErr) throw upErr;
+        .upload(fileName, file, { cacheControl: "3600", upsert: false });
+      if (storageErr) throw new Error(`Upload failed: ${storageErr.message}`);
 
-      const { data: pub } = supabase.storage.from("photos").getPublicUrl(key);
+      const { data: pub } = supabase.storage.from("photos").getPublicUrl(fileName);
       const imageUrl = pub.publicUrl;
 
-      // 2) analyze
+      // keep only last 3 images for this user
+      keepOnlyLast3Photos(userId);
+
+      // 3) Insert entry (RLS-safe: include user_id)
+      const { data: inserted, error: insertErr } = await supabase
+        .from("entries")
+        .insert({
+          user_id: userId,
+          image_url: imageUrl,
+          total_calories: 0,
+          items: [],
+        })
+        .select("id")
+        .single();
+
+      if (insertErr || !inserted) {
+        if (insertErr?.message?.toLowerCase().includes("row-level security")) {
+          throw new Error(
+            "Insert blocked by RLS. Check entries policies and ensure user_id = auth.uid() is present."
+          );
+        }
+        throw new Error(insertErr?.message || "Failed to create entry");
+      }
+
+      // 4) Analyze (OpenAI) — server updates the row
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageUrl }),
+        body: JSON.stringify({ entryId: inserted.id, imageUrl }),
       });
-      if (!res.ok) throw new Error(`Analyze failed: ${await res.text()}`);
-      const parsed: AnalyzeResponse = await res.json();
 
-      const mealName = (parsed.meal_name || "meal").toString();
-      const itemsArray = Array.isArray(parsed.items) ? parsed.items : [];
-      const normalizedItems = itemsArray.map((it) => ({
-        name: (it?.name ?? "item") as string,
-        calories: toNum(it?.calories),
-      }));
-      const total =
-        toNum(parsed.total_calories) ||
-        normalizedItems.reduce((s, it) => s + toNum(it.calories), 0);
+      const json = (await res.json()) as AnalyzeResponse;
 
-      // Build a robust items JSON that older & newer UIs can read
-      const uniqueNames = Array.from(
-        new Set([mealName, ...normalizedItems.map((i) => i.name)].filter(Boolean))
-      ).slice(0, 5);
-
-      // 3) insert
-      const { error: insErr } = await supabase.from("entries").insert({
-        user_id: userId,
-        image_url: imageUrl,
-        items: {
-          name: mealName,           // preferred field
-          items: normalizedItems,   // structured items
-          labels: uniqueNames,      // fallback for older renders
-        },
-        calories: total,
-        total_calories: total,
-      });
-      if (insErr) throw insErr;
-
-      // 4) light cleanup (keep only 3 latest images per user)
-      try {
-        const { data: list } = await supabase
-          .from("entries")
-          .select("image_url, created_at")
-          .eq("user_id", userId)
-          .order("created_at", { ascending: false });
-
-        if (list && list.length > 3) {
-          const extras = list.slice(3);
-          const keys = extras
-            .map((e: any) => (typeof e.image_url === "string" ? e.image_url.split("/photos/")[1] : null))
-            .filter(Boolean) as string[];
-          if (keys.length) await supabase.storage.from("photos").remove(keys);
-        }
-      } catch {
-        /* ignore */
+      if (!res.ok || !json.ok) {
+        const msg = (!json.ok && json.error) || "Analyze failed";
+        throw new Error(msg);
       }
 
-      // 5) broadcast + toast
+      // 5) Fetch back the updated row
+      const { data: updated, error: fetchErr } = await supabase
+        .from("entries")
+        .select("id,user_id,image_url,meal_name,total_calories,created_at,items")
+        .eq("id", json.entryId)
+        .single();
+
+      if (fetchErr || !updated) {
+        setSuccess(`${json.meal_name} — ${json.total_calories} kcal`);
+        router.refresh();
+        return;
+      }
+
+      // 6) Success toast
+      setSuccess(
+        `${updated.meal_name ?? json.meal_name} — ${
+          updated.total_calories ?? json.total_calories
+        } kcal`
+      );
+
+      // 7) 🔔 Broadcast event
       if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("entry:created", { detail: { userId } }));
+        const entry: EntryRow = updated as EntryRow;
+
+        window.dispatchEvent(
+          new CustomEvent<EntryRow>("entry:created", { detail: entry })
+        );
+        // legacy event for older listeners
+        window.dispatchEvent(new Event("entry-added"));
+
+        (window as any).__onNewEntry?.(entry);
+
+        try {
+          sessionStorage.setItem("last_entry", JSON.stringify(entry));
+        } catch {
+          /* ignore */
+        }
       }
-      setToastMsg(`Saved ${Math.round(total)} kcal for "${mealName}"`);
-      setShowToast(true);
-    } catch (e: any) {
-      setErr(e?.message || "Upload failed");
+
+      // 8) Refresh
+      router.refresh();
+    } catch (err: any) {
+      console.error(err);
+      setError(err?.message || "Upload failed");
     } finally {
-      setBusy(false);
-      if (inputRef.current) {
-        inputRef.current.value = "";
-        inputRef.current.removeAttribute("capture");
-      }
+      setSending(false);
+      if (cameraRef.current) cameraRef.current.value = "";
+      if (galleryRef.current) galleryRef.current.value = ""; // ✅ fixed: clear the correct input
     }
   }
 
   return (
-    <section className="relative border rounded-xl p-4 shadow-sm bg-white dark:bg-gray-900">
-      <h3 className="font-semibold mb-3">
-        {pretty(t("upload_photo") || "Upload Photo")}
-      </h3>
+    <div className="border rounded-lg p-4 shadow-sm bg-white">
+      <h2 className="text-lg font-semibold mb-3">
+        {pretty(t("upload_photo") || "upload_photo")}
+      </h2>
 
-      <div className="flex gap-2">
-        <button
-          onClick={takePhoto}
-          className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-60"
-          disabled={busy}
+      <input
+        ref={cameraRef}
+        id="cameraInput"
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleFile(f);
+        }}
+      />
+      <input
+        ref={galleryRef}
+        id="galleryInput"
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleFile(f);
+        }}
+      />
+
+      <div className="flex flex-wrap gap-2">
+        <label
+          htmlFor="cameraInput"
+          className={`cursor-pointer rounded-md px-4 py-2 text-white ${
+            sending ? "bg-blue-400" : "bg-blue-600 hover:bg-blue-700"
+          }`}
         >
-          {pretty(t("take_photo") || "take photo")}
-        </button>
+          {sending
+            ? pretty(t("uploading") || "uploading") + "…"
+            : pretty(t("take_photo") || "take_photo")}
+        </label>
 
-        <button
-          onClick={pickFromGallery}
-          className="px-3 py-2 rounded bg-gray-800 text-white disabled:opacity-60"
-          disabled={busy}
+        <label
+          htmlFor="galleryInput"
+          className={`cursor-pointer rounded-md px-4 py-2 text-white ${
+            sending ? "bg-gray-500" : "bg-gray-800 hover:bg-black"
+          }`}
         >
-          {pretty(t("choose_from_gallery") || "choose from gallery")}
-        </button>
-
-        <input
-          ref={inputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={(e) => handleFiles(e.target.files)}
-        />
+          {pretty(t("choose_from_gallery") || "choose_from_gallery")}
+        </label>
       </div>
 
-      {busy && <p className="text-sm text-gray-500 mt-2">{pretty(t("analyzing") || "analyzing")}…</p>}
-      {err && <p className="text-sm text-red-600 mt-2">{pretty(err)}</p>}
-
-      {showToast && (
-        <div className="fixed left-1/2 -translate-x-1/2 bottom-4 z-50 rounded-lg bg-green-600 text-white px-4 py-2 shadow-lg">
-          <div className="flex items-center gap-3">
-            <span>✅</span>
-            <span className="text-sm">{toastMsg}</span>
-            <button
-              className="ml-2 text-white/90 hover:text-white"
-              onClick={() => setShowToast(false)}
-              aria-label="Close"
-            >
-              ✕
-            </button>
-          </div>
+      {success && (
+        <div className="mt-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
+          {success}
         </div>
       )}
-    </section>
+      {error && (
+        <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {error}
+        </div>
+      )}
+
+      <p className="mt-3 text-xs text-gray-500">
+        {pretty(t("analysis_takes_a_moment") || "analysis_takes_a_moment")}
+      </p>
+    </div>
   );
 }

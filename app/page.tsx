@@ -1,3 +1,4 @@
+
 import AuthGate from "@/components/AuthGate";
 import TotalsBar from "@/components/TotalsBar";
 import UploadCard from "@/components/UploadCard";
