@@ -24,11 +24,15 @@ export default function TotalsBar() {
   // Eaten today
   const eaten = toNum(totals.day);
 
-  // pct helper with denominator
-  const pct = (val: number, denom: number) => {
+  // % helpers
+  const pctClamped = (val: number, denom: number) => {
     if (!isFinite(val) || denom <= 0) return 0;
     const p = Math.round((val / denom) * 100);
     return p < 0 ? 0 : p > 100 ? 100 : p;
+  };
+  const pctUnbounded = (val: number, denom: number) => {
+    if (!isFinite(val) || denom <= 0) return 0;
+    return Math.round((val / denom) * 100); // can be > 100
   };
 
   async function getUserId(): Promise<string | null> {
@@ -40,7 +44,7 @@ export default function TotalsBar() {
     }
   }
 
-  // === GOALS: read from goals.daily_target / weekly_target / monthly_target
+  // === GOALS
   async function fetchGoals(userId: string | null) {
     if (!userId) {
       setGoalDay(0);
@@ -73,7 +77,7 @@ export default function TotalsBar() {
     }
   }
 
-  // === SUMS: user-scoped
+  // === SUMS
   async function sumSince(userId: string | null, iso: string): Promise<number> {
     if (!userId) return 0;
     const { data, error } = await (supabase as any)
@@ -94,7 +98,7 @@ export default function TotalsBar() {
   async function hydrate() {
     const userId = await getUserId();
 
-    // fetch goals first (needed for UI state)
+    // fetch goals first
     await fetchGoals(userId);
 
     const now = new Date();
@@ -143,13 +147,19 @@ export default function TotalsBar() {
     };
   }, []);
 
-  const weekPct = pct(totals.week, goalWeek);
-  const monthPct = pct(totals.month, goalMonth);
-
-  // Over-limit state for the day
+  // Daily ring logic
   const remaining = (goalDay || 0) - eaten;
   const isOver = (goalDay || 0) > 0 && eaten >= (goalDay || 0);
   const ringColor = isOver ? "#EF4444" : "#10B981";
+
+  // Weekly/Monthly percents
+  const weekPctBar = pctClamped(totals.week, goalWeek);
+  const weekPctText = pctUnbounded(totals.week, goalWeek);
+  const weekOver = goalWeek > 0 && weekPctText > 100;
+
+  const monthPctBar = pctClamped(totals.month, goalMonth);
+  const monthPctText = pctUnbounded(totals.month, goalMonth);
+  const monthOver = goalMonth > 0 && monthPctText > 100;
 
   return (
     <div className="card">
@@ -187,27 +197,45 @@ export default function TotalsBar() {
       </div>
 
       <div className="mt-4 space-y-3">
-        {[
-          { label: pretty(t("this_week") || "this_week"), val: totals.week, pct: weekPct, denom: goalWeek },
-          { label: pretty(t("this_month") || "this_month"), val: totals.month, pct: monthPct, denom: goalMonth },
-        ].map(({ label, val, pct, denom }, i) => (
-          <div key={i}>
-            <div className="flex items-center justify-between text-sm">
-              <div className="text-slate-700">{label}</div>
-              <div className="font-semibold">{Math.round(val).toLocaleString()} kcal</div>
-            </div>
-            <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
-              <div
-                className="h-2"
-                style={{ width: `${pct}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }}
-                aria-hidden
-              />
-            </div>
-            <div className="mt-1 text-xs text-slate-600">
-              {denom > 0 ? `${pct}% of ${denom} kcal` : pretty(t("no_target_set") || "no_target_set")}
-            </div>
+        {/* Week */}
+        <div>
+          <div className="flex items-center justify-between text-sm">
+            <div className="text-slate-700">{pretty(t("this_week") || "this_week")}</div>
+            <div className="font-semibold">{Math.round(totals.week).toLocaleString()} kcal</div>
           </div>
-        ))}
+          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+            <div
+              className="h-2"
+              style={{ width: `${weekPctBar}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }}
+              aria-hidden
+            />
+          </div>
+          <div className={`mt-1 text-xs ${weekOver ? "text-red-600 font-semibold" : "text-slate-600"}`}>
+            {goalWeek > 0
+              ? `${weekPctText}% of ${goalWeek.toLocaleString()} kcal`
+              : pretty(t("no_target_set") || "no_target_set")}
+          </div>
+        </div>
+
+        {/* Month */}
+        <div>
+          <div className="flex items-center justify-between text-sm">
+            <div className="text-slate-700">{pretty(t("this_month") || "this_month")}</div>
+            <div className="font-semibold">{Math.round(totals.month).toLocaleString()} kcal</div>
+          </div>
+          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+            <div
+              className="h-2"
+              style={{ width: `${monthPctBar}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }}
+              aria-hidden
+            />
+          </div>
+          <div className={`mt-1 text-xs ${monthOver ? "text-red-600 font-semibold" : "text-slate-600"}`}>
+            {goalMonth > 0
+              ? `${monthPctText}% of ${goalMonth.toLocaleString()} kcal`
+              : pretty(t("no_target_set") || "no_target_set")}
+          </div>
+        </div>
       </div>
     </div>
   );
