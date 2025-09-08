@@ -174,7 +174,7 @@ export default function UploadCard() {
     } finally {
       setSending(false);
       if (cameraRef.current) cameraRef.current.value = "";
-      if (galleryRef.current) cameraRef.current.value = "";
+      if (galleryRef.current) galleryRef.current.value = ""; // ✅ fixed: clear the correct input
     }
   }
 
