@@ -13,8 +13,8 @@ const toNum = (v: any) =>
 type Totals = { day: number; week: number; month: number };
 
 /**
- * AutoFitText – keeps a fixed container width and shrinks the text if it would overflow.
- * Use it anywhere a number might get too long.
+ * AutoFitText – fixed container width; shrink text if it would overflow.
+ * (All DOM reads guarded inside fit() to satisfy TypeScript.)
  */
 function AutoFitText({
   children,
@@ -31,31 +31,37 @@ function AutoFitText({
   const spanRef = useRef<HTMLSpanElement | null>(null);
 
   useEffect(() => {
-    const box = boxRef.current;
-    const span = spanRef.current;
-    if (!box || !span) return;
+    const fit = () => {
+      const elBox = boxRef.current;
+      const elSpan = spanRef.current;
+      if (!elBox || !elSpan) return;
 
-    function fit() {
-      const available = box.clientWidth;
+      const available = elBox.clientWidth;
       if (available <= 0) return;
 
       let size = max;
-      span.style.fontSize = size + "px";
-      span.style.whiteSpace = "nowrap";
+      elSpan.style.fontSize = size + "px";
+      elSpan.style.whiteSpace = "nowrap";
 
       let guard = 0;
-      while (span.scrollWidth > available && size > min && guard++ < 80) {
+      while (elSpan.scrollWidth > available && size > min && guard++ < 80) {
         size -= 1;
-        span.style.fontSize = size + "px";
+        elSpan.style.fontSize = size + "px";
       }
-    }
+    };
 
     fit();
-    const ro = new ResizeObserver(fit);
-    ro.observe(box);
 
-    const mo = new MutationObserver(fit);
-    mo.observe(span, { characterData: true, childList: true, subtree: true });
+    const ro = new ResizeObserver(() => fit());
+    if (boxRef.current) ro.observe(boxRef.current);
+
+    const mo = new MutationObserver(() => fit());
+    if (spanRef.current)
+      mo.observe(spanRef.current, {
+        characterData: true,
+        childList: true,
+        subtree: true,
+      });
 
     window.addEventListener("resize", fit);
     document.addEventListener("visibilitychange", fit);
@@ -69,7 +75,10 @@ function AutoFitText({
 
   return (
     <div ref={boxRef} className={className}>
-      <span ref={spanRef} className="block leading-tight font-extrabold text-center">
+      <span
+        ref={spanRef}
+        className="block leading-tight font-extrabold text-center"
+      >
         {children}
       </span>
     </div>
@@ -84,9 +93,9 @@ export default function TotalsBar() {
   const [goalWeek, setGoalWeek] = useState<number>(0);
   const [goalMonth, setGoalMonth] = useState<number>(0);
 
-  // ring + side widths are constant; layout never shifts
-  const RING_SIZE = 220; // px – keep constant as requested
-  const SIDE_W = 96;     // px – fixed boxes for left/right figures
+  // Ring + side widths (constant)
+  const RING_SIZE = 220; // px
+  const SIDE_W = 96; // px
 
   const eaten = toNum(totals.day);
 
@@ -111,7 +120,9 @@ export default function TotalsBar() {
 
   async function fetchGoals(userId: string | null) {
     if (!userId) {
-      setGoalDay(0); setGoalWeek(0); setGoalMonth(0);
+      setGoalDay(0);
+      setGoalWeek(0);
+      setGoalMonth(0);
       return;
     }
     try {
@@ -124,13 +135,17 @@ export default function TotalsBar() {
 
       const daily = toNum(data?.daily_target);
       const weekly = toNum(data?.weekly_target || (daily > 0 ? daily * 7 : 0));
-      const monthly = toNum(data?.monthly_target || (daily > 0 ? daily * 30 : 0));
+      const monthly = toNum(
+        data?.monthly_target || (daily > 0 ? daily * 30 : 0)
+      );
 
       setGoalDay(daily);
       setGoalWeek(weekly);
       setGoalMonth(monthly);
     } catch {
-      setGoalDay(0); setGoalWeek(0); setGoalMonth(0);
+      setGoalDay(0);
+      setGoalWeek(0);
+      setGoalMonth(0);
     }
   }
 
@@ -145,7 +160,10 @@ export default function TotalsBar() {
       .limit(1000);
 
     if (error || !data) return 0;
-    return (data as any[]).reduce((s, r) => s + toNum((r as any).total_calories), 0);
+    return (data as any[]).reduce(
+      (s, r) => s + toNum((r as any).total_calories),
+      0
+    );
   }
 
   async function hydrate() {
@@ -153,7 +171,11 @@ export default function TotalsBar() {
     await fetchGoals(userId);
 
     const now = new Date();
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfDay = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate()
+    );
     const dayISO = startOfDay.toISOString();
 
     const startOfWeek = new Date(startOfDay);
@@ -213,13 +235,7 @@ export default function TotalsBar() {
       </div>
 
       {/* GRID with fixed columns: [LEFT fixed][CENTER fixed ring][RIGHT fixed] */}
-      <div
-        className="px-1"
-        style={{
-          // keep numbers/ring locked; no layout shift possible
-          // (Inline style avoids Tailwind JIT issues with arbitrary grid templates)
-        }}
-      >
+      <div className="px-1">
         <div
           className="grid items-center justify-items-center text-slate-800 text-sm"
           style={{ gridTemplateColumns: `${SIDE_W}px ${RING_SIZE}px ${SIDE_W}px` }}
