@@ -14,13 +14,12 @@ type Totals = { day: number; week: number; month: number };
 
 /**
  * AutoFitText
- * Keeps the ring size constant and shrinks the number if it would overflow.
- * We measure the available width and decrease font-size until it fits.
+ * Keeps a fixed container width and shrinks the text if it would overflow.
  */
 function AutoFitText({
   children,
   max = 44,
-  min = 18,
+  min = 16,
   className = "",
 }: {
   children: React.ReactNode;
@@ -45,7 +44,6 @@ function AutoFitText({
       span.style.fontSize = size + "px";
       span.style.whiteSpace = "nowrap";
 
-      // Shrink until it fits or we hit the minimum.
       let guard = 0;
       while (span.scrollWidth > available && size > min && guard++ < 60) {
         size -= 1;
@@ -71,11 +69,8 @@ function AutoFitText({
   }, [children, max, min]);
 
   return (
-    <div ref={boxRef} className={`w-[78%] mx-auto ${className}`}>
-      <span
-        ref={spanRef}
-        className="block leading-tight font-extrabold text-center"
-      >
+    <div ref={boxRef} className={className}>
+      <span ref={spanRef} className="block leading-tight font-extrabold text-center">
         {children}
       </span>
     </div>
@@ -240,17 +235,19 @@ export default function TotalsBar() {
         {pretty(t("totals") || "totals")}
       </div>
 
-      {/* Fixed left/right width; ring never shifts; ring size constant */}
+      {/* Fixed left/right width boxes (do not shrink), ring in the middle */}
       <div className="flex items-center justify-between text-slate-800 text-sm px-1">
-        <div className="text-center shrink-0 w-20 md:w-24">
-          <div className="text-2xl font-bold">
+        {/* LEFT: Today */}
+        <div className="text-center shrink-0 w-24 md:w-28">
+          <AutoFitText max={30} min={14}>
             {toNum(totals.day).toLocaleString()}
-          </div>
+          </AutoFitText>
           <div className="text-slate-500 -mt-1">
             {pretty(t("today") || "today")}
           </div>
         </div>
 
+        {/* CENTER: Ring (constant size) */}
         <div className="shrink-0">
           <CircleRing
             size={220}
@@ -265,7 +262,6 @@ export default function TotalsBar() {
                   min={20}
                   className={isOver ? "text-red-600" : "text-slate-900"}
                 >
-                  {/* Whole line shrinks together to avoid layout shifts */}
                   <span>
                     {remaining.toLocaleString()}{" "}
                     <span style={{ fontSize: "0.48em" }}>kcal</span>
@@ -281,14 +277,16 @@ export default function TotalsBar() {
           />
         </div>
 
-        <div className="text-center shrink-0 w-20 md:w-24">
-          <div className="text-2xl font-bold">
+        {/* RIGHT: Goal */}
+        <div className="text-center shrink-0 w-24 md:w-28">
+          <AutoFitText max={30} min={14}>
             {(goalDay || 0).toLocaleString()}
-          </div>
+          </AutoFitText>
           <div className="text-slate-500 -mt-1">Goal</div>
         </div>
       </div>
 
+      {/* Week & Month bars */}
       <div className="mt-4 space-y-3">
         {/* Week */}
         <div>
