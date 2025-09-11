@@ -24,3 +24,12 @@ body { @apply text-gray-900; }
 
 /* Chips */
 .chip { @apply inline-flex items-center gap-2 rounded-full bg-white/70 px-3 py-1 text-xs text-slate-800 shadow-sm; }
+
+/* in app/globals.css (already added previously) */
+.clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
