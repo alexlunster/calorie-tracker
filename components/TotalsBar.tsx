@@ -1,16 +1,88 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useI18n } from "@/components/I18nProvider";
 import { pretty } from "@/lib/ui";
 import CircleRing from "@/components/CircleRing";
 
+// ---- utils ---------------------------------------------------
 const toNum = (v: any) =>
   typeof v === "number" && isFinite(v) ? v : Number(v ?? 0) || 0;
 
 type Totals = { day: number; week: number; month: number };
 
+/**
+ * AutoFitText
+ * Keeps the ring size constant and shrinks the number if it would overflow.
+ * We measure the available width and decrease font-size until it fits.
+ */
+function AutoFitText({
+  children,
+  max = 44,
+  min = 18,
+  className = "",
+}: {
+  children: React.ReactNode;
+  max?: number; // px
+  min?: number; // px
+  className?: string;
+}) {
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const spanRef = useRef<HTMLSpanElement | null>(null);
+
+  useEffect(() => {
+    const box = boxRef.current;
+    const span = spanRef.current;
+    if (!box || !span) return;
+
+    function fit() {
+      if (!box || !span) return;
+      const available = box.clientWidth;
+      if (available <= 0) return;
+
+      let size = max;
+      span.style.fontSize = size + "px";
+      span.style.whiteSpace = "nowrap";
+
+      // Shrink until it fits or we hit the minimum.
+      let guard = 0;
+      while (span.scrollWidth > available && size > min && guard++ < 60) {
+        size -= 1;
+        span.style.fontSize = size + "px";
+      }
+    }
+
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(box);
+
+    const mo = new MutationObserver(fit);
+    mo.observe(span, { characterData: true, childList: true, subtree: true });
+
+    window.addEventListener("resize", fit);
+    document.addEventListener("visibilitychange", fit);
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+      window.removeEventListener("resize", fit);
+      document.removeEventListener("visibilitychange", fit);
+    };
+  }, [children, max, min]);
+
+  return (
+    <div ref={boxRef} className={`w-[78%] mx-auto ${className}`}>
+      <span
+        ref={spanRef}
+        className="block leading-tight font-extrabold text-center"
+      >
+        {children}
+      </span>
+    </div>
+  );
+}
+
+// ---- component -----------------------------------------------
 export default function TotalsBar() {
   const { t } = useI18n();
 
@@ -21,7 +93,6 @@ export default function TotalsBar() {
   const [goalWeek, setGoalWeek] = useState<number>(0);
   const [goalMonth, setGoalMonth] = useState<number>(0);
 
-  // Eaten today
   const eaten = toNum(totals.day);
 
   // % helpers
@@ -77,7 +148,7 @@ export default function TotalsBar() {
     }
   }
 
-  // === SUMS
+  // === TOTALS since given ISO date
   async function sumSince(userId: string | null, iso: string): Promise<number> {
     if (!userId) return 0;
     const { data, error } = await (supabase as any)
@@ -97,12 +168,14 @@ export default function TotalsBar() {
 
   async function hydrate() {
     const userId = await getUserId();
-
-    // fetch goals first
     await fetchGoals(userId);
 
     const now = new Date();
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfDay = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate()
+    );
     const dayISO = startOfDay.toISOString();
 
     const startOfWeek = new Date(startOfDay);
@@ -167,31 +240,51 @@ export default function TotalsBar() {
         {pretty(t("totals") || "totals")}
       </div>
 
+      {/* Fixed left/right width; ring never shifts; ring size constant */}
       <div className="flex items-center justify-between text-slate-800 text-sm px-1">
-        <div className="text-center">
-          <div className="text-2xl font-bold">{toNum(totals.day).toLocaleString()}</div>
-          <div className="text-slate-500 -mt-1">{pretty(t("today") || "today")}</div>
+        <div className="text-center shrink-0 w-20 md:w-24">
+          <div className="text-2xl font-bold">
+            {toNum(totals.day).toLocaleString()}
+          </div>
+          <div className="text-slate-500 -mt-1">
+            {pretty(t("today") || "today")}
+          </div>
         </div>
 
-        <CircleRing
-          goal={goalDay || 0}
-          eaten={eaten}
-          color={ringColor}
-          center={
-            <div className="text-center">
-              <div className={`text-4xl font-extrabold leading-tight ${isOver ? "text-red-600" : "text-slate-900"}`}>
-                {remaining.toLocaleString()}
-                <span className="text-lg align-baseline"> kcal</span>
+        <div className="shrink-0">
+          <CircleRing
+            size={220}
+            stroke={18}
+            goal={goalDay || 0}
+            eaten={eaten}
+            color={ringColor}
+            center={
+              <div className="text-center">
+                <AutoFitText
+                  max={44}
+                  min={20}
+                  className={isOver ? "text-red-600" : "text-slate-900"}
+                >
+                  {/* Whole line shrinks together to avoid layout shifts */}
+                  <span>
+                    {remaining.toLocaleString()}{" "}
+                    <span style={{ fontSize: "0.48em" }}>kcal</span>
+                  </span>
+                </AutoFitText>
+                <div className="text-sm text-slate-600 -mt-1">
+                  {isOver
+                    ? "Too much food!"
+                    : pretty(t("remaining") || "remaining")}
+                </div>
               </div>
-              <div className="text-sm text-slate-600 -mt-1">
-                {isOver ? "Too much food!" : pretty(t("remaining") || "remaining")}
-              </div>
-            </div>
-          }
-        />
+            }
+          />
+        </div>
 
-        <div className="text-center">
-          <div className="text-2xl font-bold">{(goalDay || 0).toLocaleString()}</div>
+        <div className="text-center shrink-0 w-20 md:w-24">
+          <div className="text-2xl font-bold">
+            {(goalDay || 0).toLocaleString()}
+          </div>
           <div className="text-slate-500 -mt-1">Goal</div>
         </div>
       </div>
@@ -200,17 +293,28 @@ export default function TotalsBar() {
         {/* Week */}
         <div>
           <div className="flex items-center justify-between text-sm">
-            <div className="text-slate-700">{pretty(t("this_week") || "this_week")}</div>
-            <div className="font-semibold">{Math.round(totals.week).toLocaleString()} kcal</div>
+            <div className="text-slate-700">
+              {pretty(t("this_week") || "this_week")}
+            </div>
+            <div className="font-semibold">
+              {Math.round(totals.week).toLocaleString()} kcal
+            </div>
           </div>
           <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
             <div
               className="h-2"
-              style={{ width: `${weekPctBar}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }}
+              style={{
+                width: `${weekPctBar}%`,
+                background: "linear-gradient(90deg,#F9736B,#F59E0B)",
+              }}
               aria-hidden
             />
           </div>
-          <div className={`mt-1 text-xs ${weekOver ? "text-red-600 font-semibold" : "text-slate-600"}`}>
+          <div
+            className={`mt-1 text-xs ${
+              weekOver ? "text-red-600 font-semibold" : "text-slate-600"
+            }`}
+          >
             {goalWeek > 0
               ? `${weekPctText}% of ${goalWeek.toLocaleString()} kcal`
               : pretty(t("no_target_set") || "no_target_set")}
@@ -220,17 +324,28 @@ export default function TotalsBar() {
         {/* Month */}
         <div>
           <div className="flex items-center justify-between text-sm">
-            <div className="text-slate-700">{pretty(t("this_month") || "this_month")}</div>
-            <div className="font-semibold">{Math.round(totals.month).toLocaleString()} kcal</div>
+            <div className="text-slate-700">
+              {pretty(t("this_month") || "this_month")}
+            </div>
+            <div className="font-semibold">
+              {Math.round(totals.month).toLocaleString()} kcal
+            </div>
           </div>
           <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
             <div
               className="h-2"
-              style={{ width: `${monthPctBar}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }}
+              style={{
+                width: `${monthPctBar}%`,
+                background: "linear-gradient(90deg,#F9736B,#F59E0B)",
+              }}
               aria-hidden
             />
           </div>
-          <div className={`mt-1 text-xs ${monthOver ? "text-red-600 font-semibold" : "text-slate-600"}`}>
+          <div
+            className={`mt-1 text-xs ${
+              monthOver ? "text-red-600 font-semibold" : "text-slate-600"
+            }`}
+          >
             {goalMonth > 0
               ? `${monthPctText}% of ${goalMonth.toLocaleString()} kcal`
               : pretty(t("no_target_set") || "no_target_set")}
