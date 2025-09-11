@@ -15,23 +15,28 @@ type EntryRow = {
   items?: { name: string; calories: number }[] | null;
 };
 
+function toNum(v: any): number {
+  if (typeof v === "number" && isFinite(v)) return v;
+  const n = Number(v);
+  return isFinite(n) ? n : 0;
+}
+
 export default function RecentEntries() {
   const { t } = useI18n();
   const [rows, setRows] = React.useState<EntryRow[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [busyId, setBusyId] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState<boolean>(true);
 
-  async function fetchRows() {
+  async function load() {
     setLoading(true);
     try {
-      const { data: auth } = await supabase.auth.getUser();
-      const uid = auth?.user?.id || null;
+      const { data: { user } } = await supabase.auth.getUser();
+      const uid = user?.id;
 
-      const query = supabase
+      let query = supabase
         .from("entries")
-        .select("id,user_id,image_url,meal_name,total_calories,created_at,items")
+        .select("id, user_id, image_url, meal_name, total_calories, created_at, items")
         .order("created_at", { ascending: false })
-        .limit(10);
+        .limit(100);
 
       const { data, error } = uid ? await query.eq("user_id", uid) : await query;
       if (error) throw error;
@@ -45,52 +50,34 @@ export default function RecentEntries() {
   }
 
   React.useEffect(() => {
-    let alive = true;
-    (async () => {
-      if (!alive) return;
-      await fetchRows();
-    })();
-    return () => { alive = false; };
+    load();
   }, []);
 
-  async function handleEdit(id: string, current: number) {
-    const val = window.prompt("Enter calories (kcal)", String(current));
-    if (val == null) return; // cancelled
-    const parsed = Math.round(Number(val));
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      alert("Please enter a non-negative number.");
-      return;
-    }
+  async function onEditCalories(row: EntryRow) {
+    const current = row.total_calories ?? 0;
+    const maybe = prompt(pretty(t("enter_calories") || "enter_calories"), String(current));
+    if (maybe == null) return;
+    const val = Math.max(0, Math.round(toNum(maybe)));
     try {
-      setBusyId(id);
-      const { error } = await supabase.from("entries").update({ total_calories: parsed }).eq("id", id);
+      const { error } = await supabase.from("entries").update({ total_calories: val }).eq("id", row.id);
       if (error) throw error;
-      // update local list
-      setRows((prev) => prev.map(r => r.id === id ? { ...r, total_calories: parsed } : r));
-      // notify totals/components
-      window.dispatchEvent(new Event("entry:updated"));
+      setRows(prev => prev.map(r => (r.id === row.id ? { ...r, total_calories: val } : r)));
     } catch (e) {
-      console.error("Edit failed:", e);
-      alert("Failed to update entry.");
-    } finally {
-      setBusyId(null);
+      alert(pretty(t("something_went_wrong") || "something_went_wrong"));
+      console.error(e);
     }
   }
 
-  async function handleDelete(id: string) {
-    const ok = window.confirm("Delete this entry?");
+  async function onDelete(row: EntryRow) {
+    const ok = confirm(pretty(t("are_you_sure_delete") || "are_you_sure_delete"));
     if (!ok) return;
     try {
-      setBusyId(id);
-      const { error } = await supabase.from("entries").delete().eq("id", id);
+      const { error } = await supabase.from("entries").delete().eq("id", row.id);
       if (error) throw error;
-      setRows((prev) => prev.filter(r => r.id !== id));
-      window.dispatchEvent(new Event("entry:updated"));
+      setRows(prev => prev.filter(r => r.id !== row.id));
     } catch (e) {
-      console.error("Delete failed:", e);
-      alert("Failed to delete entry.");
-    } finally {
-      setBusyId(null);
+      alert(pretty(t("something_went_wrong") || "something_went_wrong"));
+      console.error(e);
     }
   }
 
@@ -98,46 +85,49 @@ export default function RecentEntries() {
     return <div className="text-sm text-gray-500">{pretty(t("loading") || "loading")}…</div>;
   }
 
-  if (!rows || rows.length === 0) {
+  if (!rows.length) {
     return <div className="text-sm text-gray-500">{pretty(t("no_recent_entries") || "no_recent_entries")}</div>;
   }
 
   return (
-    <div className="space-y-3">
+    <div className="grid gap-3">
       {rows.map((r) => {
-        const kcal = Math.max(0, Number(r.total_calories ?? 0));
-        const dt = new Date(r.created_at);
-        const dateStr = dt.toLocaleString();
-        const disabled = busyId === r.id;
+        const calories = typeof r.total_calories === "number" ? r.total_calories : 0;
+        const meal = r.meal_name || pretty(t("untitled_meal") || "untitled_meal");
+        const when = new Date(r.created_at);
+        const whenStr = when.toLocaleString();
 
         return (
-          <div key={r.id} className="flex items-center justify-between rounded-2xl bg-white/80 backdrop-blur shadow-sm px-4 py-3">
-            <div className="min-w-0">
-              <div className="truncate text-sm font-medium text-slate-900">
-                {r.meal_name || pretty(t("untitled_meal") || "untitled_meal")}
+          <div key={r.id} className="rounded-2xl bg-white/80 backdrop-blur border border-gray-200 p-3 shadow-sm">
+            <div className="flex items-start gap-3">
+              {/* TITLE — limited to one visible line with ellipsis; won't push buttons */}
+              <div className="flex-1 min-w-0">
+                <div className="text-base font-medium leading-6 truncate">{meal}</div>
+                <div className="text-xs text-gray-500">{whenStr}</div>
               </div>
-              <div className="text-xs text-gray-500">{dateStr}</div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="text-sm font-semibold tabular-nums">{kcal} kcal</div>
-              <button
-                onClick={() => handleEdit(r.id, kcal)}
-                disabled={disabled}
-                className="text-xs px-2 py-1 rounded border border-slate-200 hover:bg-slate-50 disabled:opacity-50"
-                aria-label="Edit calories"
-                title="Edit calories"
-              >
-                Edit
-              </button>
-              <button
-                onClick={() => handleDelete(r.id)}
-                disabled={disabled}
-                className="text-xs px-2 py-1 rounded border border-red-200 text-red-700 hover:bg-red-50 disabled:opacity-50"
-                aria-label="Delete entry"
-                title="Delete entry"
-              >
-                {pretty(t("delete") || "delete")}
-              </button>
+
+              {/* Calories */}
+              <div className="whitespace-nowrap font-semibold text-gray-900">{calories} kcal</div>
+
+              {/* Buttons */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => onEditCalories(r)}
+                  className="text-xs px-2 py-1 rounded border border-gray-200 hover:bg-gray-50"
+                  aria-label="Edit entry calories"
+                  title={pretty(t("edit") || "edit")}
+                >
+                  {pretty(t("edit") || "edit")}
+                </button>
+                <button
+                  onClick={() => onDelete(r)}
+                  className="text-xs px-2 py-1 rounded border border-red-200 text-red-700 hover:bg-red-50"
+                  aria-label="Delete entry"
+                  title={pretty(t("delete") || "delete")}
+                >
+                  {pretty(t("delete") || "delete")}
+                </button>
+              </div>
             </div>
           </div>
         );
