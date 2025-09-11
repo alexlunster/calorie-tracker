@@ -85,21 +85,60 @@ function AutoFitText({
   );
 }
 
-/** Simple responsive dimensions for the ring + side boxes */
-function computeDims(win: Window | null) {
-  // Defaults for SSR
-  let side = 112; // px
-  let ring = 220; // px
-  if (win) {
-    const w = win.innerWidth;
-    if (w >= 1024) {
-      side = 148;
-      ring = 260;
-    } else if (w >= 768) {
-      side = 132;
-      ring = 240;
-    }
+/** Hook: measure the available width of the grid container */
+function useContainerWidth() {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const update = () => setW(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    window.addEventListener("resize", update);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, []);
+  return { ref, width: w };
+}
+
+/** Compute side widths and ring size that ALWAYS fit the container width */
+function computeDims(containerWidth: number) {
+  // Reasonable bounds for aesthetics
+  const SIDE_MIN = 78;   // px (small but readable)
+  const SIDE_MAX = 160;  // px
+  const RING_MIN = 150;  // px
+  const RING_MAX = 280;  // px
+
+  // Fallback when width is unknown (SSR/first paint)
+  if (containerWidth <= 0) {
+    return { side: 112, ring: 220 };
   }
+
+  // Start with proportional sides, then adjust to fit.
+  let side = Math.round(containerWidth * 0.22);
+  side = Math.max(SIDE_MIN, Math.min(SIDE_MAX, side));
+
+  let ring = containerWidth - 2 * side;
+
+  // If ring is too small, try shrinking sides down to minimum.
+  if (ring < RING_MIN) {
+    side = SIDE_MIN;
+    ring = containerWidth - 2 * side;
+  }
+
+  // Final clamp for ring
+  ring = Math.max(RING_MIN, Math.min(RING_MAX, ring));
+
+  // If even after clamping things still don't fit (super-narrow screen),
+  // force everything to fit by proportionally reducing ring.
+  if (2 * side + ring > containerWidth) {
+    ring = Math.max(RING_MIN * 0.9, containerWidth - 2 * side);
+  }
+
   return { side, ring };
 }
 
@@ -111,15 +150,8 @@ export default function TotalsBar() {
   const [goalWeek, setGoalWeek] = useState<number>(0);
   const [goalMonth, setGoalMonth] = useState<number>(0);
 
-  const [dims, setDims] = useState(() => computeDims(null));
-
-  // keep ring + sides fixed; adjust on resize only
-  useEffect(() => {
-    const update = () => setDims(computeDims(window));
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
+  const grid = useContainerWidth();
+  const dims = computeDims(grid.width);
 
   const eaten = toNum(totals.day);
 
@@ -252,7 +284,7 @@ export default function TotalsBar() {
   const monthPctText = pctUnbounded(totals.month, goalMonth);
   const monthOver = goalMonth > 0 && monthPctText > 100;
 
-  // Side text sizing: allow a touch larger font on wider screens
+  // Side text sizing: allow a touch larger font on wider cards
   const sideMax = dims.ring >= 240 ? 34 : 30;
 
   return (
@@ -261,9 +293,10 @@ export default function TotalsBar() {
         {pretty(t("totals") || "totals")}
       </div>
 
-      {/* GRID with fixed columns: [LEFT fixed][CENTER fixed ring][RIGHT fixed] */}
+      {/* GRID with dynamic, always-fitting columns */}
       <div className="px-1">
         <div
+          ref={grid.ref}
           className="grid items-center justify-items-center text-slate-800 text-sm"
           style={{
             gridTemplateColumns: `${dims.side}px ${dims.ring}px ${dims.side}px`,
@@ -279,7 +312,7 @@ export default function TotalsBar() {
             </div>
           </div>
 
-          {/* CENTER: Ring (constant size & position) */}
+          {/* CENTER: Ring (size computed to fit; position locked) */}
           <div className="w-full flex items-center justify-center">
             <CircleRing
               size={dims.ring}
