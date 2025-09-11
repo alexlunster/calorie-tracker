@@ -14,7 +14,7 @@ type Totals = { day: number; week: number; month: number };
 
 /**
  * AutoFitText – fixed container width; shrink text if it would overflow.
- * (All DOM reads guarded inside fit() to satisfy TypeScript.)
+ * (All DOM reads guarded to satisfy TypeScript.)
  */
 function AutoFitText({
   children,
@@ -44,7 +44,7 @@ function AutoFitText({
       elSpan.style.whiteSpace = "nowrap";
 
       let guard = 0;
-      while (elSpan.scrollWidth > available && size > min && guard++ < 80) {
+      while (elSpan.scrollWidth > available && size > min && guard++ < 100) {
         size -= 1;
         elSpan.style.fontSize = size + "px";
       }
@@ -85,6 +85,24 @@ function AutoFitText({
   );
 }
 
+/** Simple responsive dimensions for the ring + side boxes */
+function computeDims(win: Window | null) {
+  // Defaults for SSR
+  let side = 112; // px
+  let ring = 220; // px
+  if (win) {
+    const w = win.innerWidth;
+    if (w >= 1024) {
+      side = 148;
+      ring = 260;
+    } else if (w >= 768) {
+      side = 132;
+      ring = 240;
+    }
+  }
+  return { side, ring };
+}
+
 export default function TotalsBar() {
   const { t } = useI18n();
 
@@ -93,9 +111,15 @@ export default function TotalsBar() {
   const [goalWeek, setGoalWeek] = useState<number>(0);
   const [goalMonth, setGoalMonth] = useState<number>(0);
 
-  // Ring + side widths (constant)
-  const RING_SIZE = 220; // px
-  const SIDE_W = 96; // px
+  const [dims, setDims] = useState(() => computeDims(null));
+
+  // keep ring + sides fixed; adjust on resize only
+  useEffect(() => {
+    const update = () => setDims(computeDims(window));
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
 
   const eaten = toNum(totals.day);
 
@@ -228,6 +252,9 @@ export default function TotalsBar() {
   const monthPctText = pctUnbounded(totals.month, goalMonth);
   const monthOver = goalMonth > 0 && monthPctText > 100;
 
+  // Side text sizing: allow a touch larger font on wider screens
+  const sideMax = dims.ring >= 240 ? 34 : 30;
+
   return (
     <div className="card">
       <div className="mb-2 text-sm font-medium text-slate-700">
@@ -238,11 +265,13 @@ export default function TotalsBar() {
       <div className="px-1">
         <div
           className="grid items-center justify-items-center text-slate-800 text-sm"
-          style={{ gridTemplateColumns: `${SIDE_W}px ${RING_SIZE}px ${SIDE_W}px` }}
+          style={{
+            gridTemplateColumns: `${dims.side}px ${dims.ring}px ${dims.side}px`,
+          }}
         >
           {/* LEFT: Today (fixed width, auto-shrink digits) */}
           <div className="w-full text-center">
-            <AutoFitText max={30} min={12}>
+            <AutoFitText max={sideMax} min={12}>
               {toNum(totals.day).toLocaleString()}
             </AutoFitText>
             <div className="text-slate-500 -mt-1">
@@ -253,7 +282,7 @@ export default function TotalsBar() {
           {/* CENTER: Ring (constant size & position) */}
           <div className="w-full flex items-center justify-center">
             <CircleRing
-              size={RING_SIZE}
+              size={dims.ring}
               stroke={18}
               goal={goalDay || 0}
               eaten={eaten}
@@ -261,7 +290,7 @@ export default function TotalsBar() {
               center={
                 <div className="text-center">
                   <AutoFitText
-                    max={44}
+                    max={46}
                     min={18}
                     className={isOver ? "text-red-600" : "text-slate-900"}
                   >
@@ -271,7 +300,9 @@ export default function TotalsBar() {
                     </span>
                   </AutoFitText>
                   <div className="text-sm text-slate-600 -mt-1">
-                    {isOver ? "Too much food!" : pretty(t("remaining") || "remaining")}
+                    {isOver
+                      ? "Too much food!"
+                      : pretty(t("remaining") || "remaining")}
                   </div>
                 </div>
               }
@@ -280,7 +311,7 @@ export default function TotalsBar() {
 
           {/* RIGHT: Goal (fixed width, auto-shrink digits) */}
           <div className="w-full text-center">
-            <AutoFitText max={30} min={12}>
+            <AutoFitText max={sideMax} min={12}>
               {(goalDay || 0).toLocaleString()}
             </AutoFitText>
             <div className="text-slate-500 -mt-1">Goal</div>
@@ -293,17 +324,28 @@ export default function TotalsBar() {
         {/* Week */}
         <div>
           <div className="flex items-center justify-between text-sm">
-            <div className="text-slate-700">{pretty(t("this_week") || "this_week")}</div>
-            <div className="font-semibold">{Math.round(totals.week).toLocaleString()} kcal</div>
+            <div className="text-slate-700">
+              {pretty(t("this_week") || "this_week")}
+            </div>
+            <div className="font-semibold">
+              {Math.round(totals.week).toLocaleString()} kcal
+            </div>
           </div>
           <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
             <div
               className="h-2"
-              style={{ width: `${weekPctBar}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }}
+              style={{
+                width: `${weekPctBar}%`,
+                background: "linear-gradient(90deg,#F9736B,#F59E0B)",
+              }}
               aria-hidden
             />
           </div>
-          <div className={`mt-1 text-xs ${weekOver ? "text-red-600 font-semibold" : "text-slate-600"}`}>
+          <div
+            className={`mt-1 text-xs ${
+              weekOver ? "text-red-600 font-semibold" : "text-slate-600"
+            }`}
+          >
             {goalWeek > 0
               ? `${weekPctText}% of ${goalWeek.toLocaleString()} kcal`
               : pretty(t("no_target_set") || "no_target_set")}
@@ -313,17 +355,28 @@ export default function TotalsBar() {
         {/* Month */}
         <div>
           <div className="flex items-center justify-between text-sm">
-            <div className="text-slate-700">{pretty(t("this_month") || "this_month")}</div>
-            <div className="font-semibold">{Math.round(totals.month).toLocaleString()} kcal</div>
+            <div className="text-slate-700">
+              {pretty(t("this_month") || "this_month")}
+            </div>
+            <div className="font-semibold">
+              {Math.round(totals.month).toLocaleString()} kcal
+            </div>
           </div>
           <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
             <div
               className="h-2"
-              style={{ width: `${monthPctBar}%`, background: "linear-gradient(90deg,#F9736B,#F59E0B)" }}
+              style={{
+                width: `${monthPctBar}%`,
+                background: "linear-gradient(90deg,#F9736B,#F59E0B)",
+              }}
               aria-hidden
             />
           </div>
-          <div className={`mt-1 text-xs ${monthOver ? "text-red-600 font-semibold" : "text-slate-600"}`}>
+          <div
+            className={`mt-1 text-xs ${
+              monthOver ? "text-red-600 font-semibold" : "text-slate-600"
+            }`}
+          >
             {goalMonth > 0
               ? `${monthPctText}% of ${goalMonth.toLocaleString()} kcal`
               : pretty(t("no_target_set") || "no_target_set")}
